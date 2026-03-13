@@ -1,0 +1,5 @@
+# eNSP MCP Server Dependencies
+mcp>=1.0.0
+netmiko>=4.1.0
+paramiko>=3.4.0
+pydantic>=2.0.0
