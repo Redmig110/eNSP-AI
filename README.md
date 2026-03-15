@@ -1,8 +1,11 @@
-# eNSP MCP Server
+# eNSP-AI
 
-让 AI 通过 MCP 协议管理华为 eNSP 模拟网络设备。
+让 AI 通过 MCP 协议管理华为 eNSP 模拟网络设备，并提供拓扑可视化工具。
 
-支持 Claude Desktop、Claude Code、Cursor 等任何 MCP 客户端，提供 **35 个工具**，覆盖 CLI 执行、配置管理、协议排错、网络诊断、拓扑发现、健康检查、配置回滚等功能。
+## 功能概览
+
+- **MCP Server** — 通过自然语言操作 eNSP 设备（CLI 执行、配置下发、网络诊断、拓扑发现、健康检查）
+- **Topo Viewer** — 浏览器拓扑可视化，拖入 .topo 文件即可渲染交互式网络图，自动同步拓扑数据给 AI
 
 ## 前置条件
 
@@ -57,7 +60,7 @@ claude mcp add ensp-ai -- python -m ensp_mcp_server.server --cwd /path/to/eNSP-A
 
 ### Cursor
 
-在 Settings → MCP Servers 中添加，配置同上。
+在 Settings > MCP Servers 中添加，配置同上。
 
 > **注意：** `cwd` 路径改成你实际的项目目录。
 
@@ -73,7 +76,7 @@ claude mcp add ensp-ai -- python -m ensp_mcp_server.server --cwd /path/to/eNSP-A
 
 **自动发现（推荐）：** 直接让 AI 执行 `auto_discover`，自动扫描 eNSP 进程端口并注册所有设备。
 
-**手动注册：** 在 eNSP 中右键设备 → 设置 → 查看串口号，然后让 AI 执行：
+**手动注册：** 在 eNSP 中右键设备 > 设置 > 查看串口号，然后让 AI 执行：
 ```
 register_device(name="R1", port=2000)
 ```
@@ -86,13 +89,45 @@ register_device(name="R1", port=2000)
 "帮我看看 R1 的路由表"
 "给 R1 和 R2 配置 OSPF"
 "检查所有设备的健康状态"
-"对比 R1 当前配置和保存的配置有什么差异"
-"保存 R1 的配置快照，然后修改 OSPF，如果有问题就回滚"
 ```
 
-## 工具列表
+## Topo Viewer 拓扑可视化
 
-### 设备管理（4 个）
+浏览器拓扑查看器，拖入 .topo 文件即可渲染交互式网络图，并自动同步拓扑数据给 AI。
+
+### 启动
+
+```bash
+cd eNSP-AI
+python topo-server.py
+```
+
+浏览器自动打开，拖入 .topo 文件即可。AI 通过读取自动生成的 `topology.json` 获取拓扑信息。
+
+### 功能
+
+- 解析 eNSP `.topo` XML，渲染设备节点 + 连线 + 接口名 + IP 标注
+- 设备图标区分：路由器 / 交换机 / 防火墙 / PC / Cloud
+- 接口索引自动还原为接口名（交换机 1-based，路由器 0-based）
+- 粘贴截图 (Ctrl+V) 或拖入图片作为参考底图，支持透明度调节
+- 点击设备查看详情（型号、COM 端口、接口列表）
+- 底部状态栏分类统计，左上角设备图例
+- 快捷键：`F` 适应画布、`Esc` 关闭面板、`Del` 清除
+- 拓扑数据自动同步到 `topology.json`，AI 可直接读取
+
+### 数据流
+
+```
+拖入 .topo --> 浏览器解析渲染 --> POST /api/topology --> topology.json 落盘
+                                                              |
+                                                    AI 读取此文件进行配置
+```
+
+> 也可双击 `topo-viewer.html` 独立使用（不启动服务器时可视化仍可用，仅同步功能不生效）。
+
+## MCP 工具列表
+
+### 设备管理
 | 工具 | 说明 |
 |------|------|
 | `register_device` | 注册 eNSP 设备（名称 + 端口） |
@@ -100,64 +135,45 @@ register_device(name="R1", port=2000)
 | `list_devices` | 列出所有已注册设备 |
 | `auto_discover` | 自动发现并注册 eNSP 设备 |
 
-### CLI 操作（5 个）
+### CLI 与配置
 | 工具 | 说明 |
 |------|------|
-| `execute_cli` | 执行单条查询命令 |
-| `push_config` | 下发配置命令列表 |
-| `save_config` | 保存配置（自动处理 Y/N 确认） |
-| `batch_config` | 批量下发多组配置 |
+| `execute_cli` | 执行单条查询/显示命令 |
+| `push_config` | 下发配置命令列表（自动进入 system-view） |
 | `multi_device_push_config` | 同时向多台设备下发配置 |
+| `save_config` | 保存配置（自动处理 Y/N 确认） |
+| `get_running_config` | 查看运行配置（支持 section 过滤） |
 
-### 网络诊断（7 个）
+### 网络诊断
 | 工具 | 说明 |
 |------|------|
-| `get_running_config` | 查看运行配置（支持 section 过滤） |
-| `get_interface_info` | 查看接口信息（支持 JSON 输出） |
-| `get_routing_table` | 查看路由表（支持协议过滤 + JSON） |
-| `get_arp_table` | 查看 ARP 表（支持 JSON 输出） |
 | `ping_from_device` | 从设备发起 Ping |
 | `traceroute_from_device` | 从设备发起 Traceroute |
-| `get_interface_statistics` | 接口流量统计和错误计数 |
+| `health_check` | 单设备健康检查（TCP + CLI） |
+| `multi_health_check` | 批量健康检查 |
 
-### 协议排错（6 个）
-| 工具 | 说明 |
-|------|------|
-| `check_ospf` | OSPF 邻居/接口/LSDB（支持 JSON） |
-| `check_bgp` | BGP 邻居/路由表（支持 JSON） |
-| `check_acl` | ACL 规则和匹配统计 |
-| `check_nat` | NAT 会话/地址池/统计 |
-| `check_stp` | STP/RSTP/MSTP 状态 |
-| `check_vlan` | VLAN 配置和端口分配 |
-
-### 设备运维（6 个）
-| 工具 | 说明 |
-|------|------|
-| `get_device_version` | 设备版本和硬件信息 |
-| `backup_config` | 备份完整配置 |
-| `compare_config` | 对比运行配置与保存配置（diff 格式） |
-| `reboot_device` | 重启设备（可选保存） |
-| `get_log` | 查看设备日志 |
-| `get_cpu_memory` | CPU 和内存使用情况 |
-
-### 拓扑发现（2 个）
+### 拓扑发现
 | 工具 | 说明 |
 |------|------|
 | `discover_topology` | 解析 eNSP .topo 文件 |
 | `find_topo_files` | 搜索本地 .topo 文件 |
 
-### 健康检查（2 个）
-| 工具 | 说明 |
-|------|------|
-| `health_check` | 单设备健康检查（TCP + CLI） |
-| `multi_health_check` | 批量健康检查 |
+## 项目结构
 
-### 配置回滚（3 个）
-| 工具 | 说明 |
-|------|------|
-| `save_config_snapshot` | 保存配置快照到本地 |
-| `list_config_snapshots` | 列出可用快照 |
-| `rollback_config` | 从快照回滚配置 |
+```
+eNSP-AI/
+├── requirements.txt          # Python 依赖
+├── topo-viewer.html          # 拓扑可视化（浏览器）
+├── topo-server.py            # 可视化本地服务器
+└── ensp_mcp_server/          # MCP Server 主包
+    ├── __init__.py
+    ├── server.py              # MCP Server 入口 & 工具注册
+    ├── config.py              # 配置 & 设备注册表
+    ├── console.py             # Telnet 控制台连接
+    ├── exceptions.py          # 自定义异常
+    └── tools/
+        └── cli.py             # CLI 执行 & 配置工具
+```
 
 ## 环境变量（可选）
 
@@ -165,28 +181,7 @@ register_device(name="R1", port=2000)
 |------|------|--------|
 | `ENSP_USERNAME` | 全局设备用户名 | 空 |
 | `ENSP_PASSWORD` | 全局设备密码 | 空 |
-| `ENSP_LOG_LEVEL` | 日志级别（DEBUG/INFO/WARNING/ERROR） | WARNING |
-
-## 项目结构
-
-```
-eNSP-AI/
-├── requirements.txt          # 依赖
-└── ensp_mcp_server/          # 主包
-    ├── __init__.py            # 版本号
-    ├── server.py              # MCP Server 入口
-    ├── config.py              # 配置 & 设备注册表
-    ├── exceptions.py          # 自定义异常
-    ├── connection_pool.py     # 连接池
-    ├── parsers.py             # 结构化输出解析器
-    └── tools/
-        ├── cli.py             # CLI 执行工具
-        ├── diagnostic.py      # 网络诊断工具
-        ├── protocol.py        # 协议排错工具
-        ├── management.py      # 设备管理 & 配置回滚
-        ├── topology.py        # 拓扑发现
-        └── health.py          # 健康检查
-```
+| `ENSP_LOG_LEVEL` | 日志级别 | WARNING |
 
 ## License
 

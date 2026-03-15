@@ -4,6 +4,7 @@ __pycache__/
 .env
 config_snapshots/
 devices.json
+topology.json
 *.egg-info/
 dist/
 build/

@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>eNSP Topo Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<style>
+:root{
+  --bg:#f5f6f8;--surface:#fff;--border:#e2e5ea;--text:#1e293b;--text2:#64748b;--text3:#94a3b8;
+  --blue:#3b82f6;--green:#10b981;--red:#ef4444;--yellow:#f59e0b;--purple:#6366f1;
+  --radius:6px;--shadow:0 1px 3px rgba(0,0,0,.08);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;font-family:'Segoe UI','Microsoft YaHei',system-ui,sans-serif;overflow:hidden;background:var(--bg)}
+body{display:flex;flex-direction:column}
+
+/* Toolbar */
+#toolbar{
+  display:flex;align-items:center;gap:8px;padding:0 16px;height:42px;
+  background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;z-index:10;
+}
+.logo{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700;color:var(--text);white-space:nowrap}
+.logo svg{width:20px;height:20px}
+.sep{width:1px;height:20px;background:var(--border);flex-shrink:0}
+.btn{
+  height:28px;padding:0 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--surface);color:var(--text);cursor:pointer;white-space:nowrap;
+  display:inline-flex;align-items:center;gap:5px;transition:all .15s;
+}
+.btn:hover:not(:disabled){background:#f0f2f5;border-color:#c0c4cc}
+.btn:active:not(:disabled){background:#e8eaed}
+.btn:disabled{opacity:.35;cursor:default}
+.btn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.btn-primary{background:var(--blue);color:#fff;border-color:var(--blue)}
+.btn-primary:hover:not(:disabled){background:#2563eb;border-color:#2563eb}
+.spacer{flex:1}
+#sync-badge{
+  display:none;align-items:center;gap:4px;padding:2px 8px;
+  font-size:11px;color:var(--green);background:#ecfdf5;border-radius:10px;
+}
+#sync-badge::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--green)}
+
+/* Main area */
+#container{flex:1;position:relative;overflow:hidden;background:var(--bg)}
+#canvas{width:100%;height:100%;position:relative;z-index:2}
+
+/* Empty state */
+#empty{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  pointer-events:none;z-index:5;
+}
+#empty.hidden{display:none}
+.empty-card{
+  text-align:center;padding:40px 56px;background:var(--surface);border-radius:12px;
+  box-shadow:var(--shadow);border:1px solid var(--border);
+}
+.empty-card h2{font-size:16px;color:var(--text);margin-bottom:6px;font-weight:600}
+.empty-card p{font-size:13px;color:var(--text2);line-height:1.7}
+.empty-card .hint{margin-top:14px;font-size:11px;color:var(--text3)}
+.empty-card kbd{
+  display:inline-block;padding:1px 5px;font-size:10px;font-family:inherit;
+  background:#f1f5f9;border:1px solid var(--border);border-radius:3px;color:var(--text2);
+}
+
+/* Status bar */
+#statusbar{
+  display:flex;align-items:center;gap:12px;padding:0 16px;height:28px;
+  background:var(--surface);border-top:1px solid var(--border);flex-shrink:0;
+  font-size:11px;color:var(--text2);
+}
+#stats{display:flex;gap:12px}
+.stat{display:flex;align-items:center;gap:4px}
+.stat-dot{width:8px;height:8px;border-radius:2px}
+
+/* Drop overlay */
+#drop-overlay{
+  display:none;position:fixed;inset:0;z-index:100;
+  background:rgba(59,130,246,0.08);backdrop-filter:blur(2px);
+}
+#drop-overlay.active{display:flex;align-items:center;justify-content:center}
+.drop-card{
+  padding:40px 60px;border-radius:16px;background:var(--surface);text-align:center;
+  border:2px dashed var(--blue);box-shadow:0 8px 32px rgba(59,130,246,0.12);
+}
+.drop-card h3{font-size:18px;color:var(--blue);margin-bottom:4px}
+.drop-card p{font-size:13px;color:var(--text2)}
+
+/* Info panel */
+#info{
+  display:none;position:absolute;top:12px;right:12px;width:260px;
+  background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  box-shadow:0 4px 20px rgba(0,0,0,0.1);z-index:20;max-height:80vh;overflow-y:auto;
+}
+#info-header{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border)}
+#info-header h3{font-size:13px;color:var(--text);font-weight:600}
+#info-close{
+  width:20px;height:20px;border-radius:4px;border:none;background:transparent;
+  cursor:pointer;font-size:14px;color:var(--text3);display:flex;align-items:center;justify-content:center;
+}
+#info-close:hover{background:#f1f5f9;color:var(--text)}
+#info-body{padding:10px 14px;font-size:12px;line-height:1.7}
+.info-row{display:flex;gap:6px}
+.info-row .lbl{color:var(--text3);font-size:11px;min-width:40px}
+.info-row .val{color:var(--text);font-family:Consolas,'Courier New',monospace;font-size:11px}
+.iface-title{margin-top:10px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--text3)}
+.iface-list{padding:0;list-style:none;margin-top:4px;max-height:200px;overflow-y:auto}
+.iface-list li{
+  padding:3px 8px;margin:2px 0;background:#f8fafc;border-radius:4px;
+  font-family:Consolas,Microsoft YaHei,SimHei,monospace;font-size:11px;color:var(--text);
+}
+
+/* Legend */
+#legend{
+  position:absolute;top:12px;left:12px;z-index:15;
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:8px 12px;box-shadow:var(--shadow);display:none;
+}
+#legend.show{display:block}
+.legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text2);padding:2px 0}
+.legend-icon{width:16px;height:16px;border-radius:3px;display:flex;align-items:center;justify-content:center}
+
+input[type="file"]{display:none}
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/></svg>
+    eNSP Topo Viewer
+  </div>
+  <div class="sep"></div>
+  <label class="btn btn-primary">
+    <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+    导入文件
+    <input type="file" id="fileInput" accept=".topo,.xml,.png,.jpg,.jpeg,.gif,.bmp,.webp">
+  </label>
+  <button class="btn" id="btnFit" disabled onclick="fitView()" title="适应画布 (F)">
+    <svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+    适应
+  </button>
+  <button class="btn" id="btnClear" disabled onclick="clearAll()" title="清除 (Delete)">
+    <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    清除
+  </button>
+  <div class="sep"></div>
+  <button class="btn" id="btnPaste" onclick="pasteFromClipboard()" title="粘贴截图 (Ctrl+V)">
+    <svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/></svg>
+    粘贴截图
+  </button>
+  <div id="bg-bar" style="display:none">
+    <div class="sep"></div>
+    <span style="font-size:11px;color:var(--text3)">底图</span>
+    <input type="range" id="bgOpacity" min="5" max="100" value="40" style="width:70px;height:16px;cursor:pointer" oninput="setBgOpacity(this.value)" title="底图透明度">
+    <button class="btn" onclick="clearBg()" style="padding:0 6px;height:22px;font-size:11px">移除</button>
+  </div>
+  <div class="spacer"></div>
+  <span id="sync-badge">已同步</span>
+</div>
+
+<div id="container">
+  <img id="bg-img" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none;opacity:.4;display:none;z-index:1">
+  <div id="canvas"></div>
+  <div id="empty">
+    <div class="empty-card">
+      <h2>拖入拓扑文件开始</h2>
+      <p>将 .topo 文件拖放到此处<br>或使用「导入文件」按钮选择</p>
+      <p style="margin-top:10px;font-size:12px;color:var(--text3)">也支持粘贴 / 拖入截图作为参考底图</p>
+      <div class="hint">
+        <kbd>F</kbd> 适应画布 &nbsp; <kbd>Esc</kbd> 关闭面板 &nbsp; <kbd>Del</kbd> 清除
+      </div>
+    </div>
+  </div>
+  <div id="info">
+    <div id="info-header"><h3 id="info-title"></h3><button id="info-close" onclick="closeInfo()">x</button></div>
+    <div id="info-body"></div>
+  </div>
+  <div id="legend">
+    <div class="legend-item"><div class="legend-icon" style="background:#dbeafe"><svg width="12" height="12" viewBox="0 0 60 60"><circle cx="30" cy="30" r="24" fill="#3B82F6"/></svg></div> 路由器</div>
+    <div class="legend-item"><div class="legend-icon" style="background:#d1fae5"><svg width="12" height="12" viewBox="0 0 60 40"><rect x="4" y="4" width="52" height="32" rx="4" fill="#10B981"/></svg></div> 交换机</div>
+    <div class="legend-item"><div class="legend-icon" style="background:#fee2e2"><svg width="12" height="12" viewBox="0 0 60 60"><rect x="6" y="6" width="48" height="48" rx="4" fill="#EF4444"/></svg></div> 防火墙</div>
+    <div class="legend-item"><div class="legend-icon" style="background:#e0e7ff"><svg width="12" height="12" viewBox="0 0 48 48"><rect x="8" y="6" width="32" height="24" rx="2" fill="#6366F1"/></svg></div> 终端</div>
+    <div class="legend-item" style="margin-top:2px;padding-top:4px;border-top:1px solid var(--border)">
+      <svg width="24" height="2"><line x1="0" y1="1" x2="24" y2="1" stroke="#888" stroke-width="2"/></svg> Copper
+    </div>
+    <div class="legend-item">
+      <svg width="24" height="2"><line x1="0" y1="1" x2="24" y2="1" stroke="#E53E3E" stroke-width="2" stroke-dasharray="4 3"/></svg> Serial
+    </div>
+  </div>
+</div>
+
+<div id="statusbar">
+  <div id="stats"></div>
+  <div class="spacer"></div>
+  <span id="status">就绪</span>
+</div>
+
+<div id="drop-overlay">
+  <div class="drop-card">
+    <h3>释放文件到此处</h3>
+    <p>支持 .topo 拓扑文件 和 图片文件</p>
+  </div>
+</div>
+
+<script>
+/* ===== SVG Device Icons ===== */
+function mkIcon(s){return 'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(s)}
+var ICONS={
+  router:mkIcon('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60"><circle cx="30" cy="30" r="24" fill="#3B82F6" stroke="#1D4ED8" stroke-width="2"/><line x1="30" y1="8" x2="30" y2="52" stroke="#fff" stroke-width="2"/><line x1="8" y1="30" x2="52" y2="30" stroke="#fff" stroke-width="2"/><polygon points="30,10 26,18 34,18" fill="#fff"/><polygon points="30,50 26,42 34,42" fill="#fff"/><polygon points="10,30 18,26 18,34" fill="#fff"/><polygon points="50,30 42,26 42,34" fill="#fff"/></svg>'),
+  switch:mkIcon('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 42"><rect x="2" y="2" width="60" height="38" rx="4" fill="#10B981" stroke="#047857" stroke-width="2"/><polygon points="18,13 10,21 18,29" fill="#fff"/><polygon points="46,13 54,21 46,29" fill="#fff"/><line x1="18" y1="21" x2="30" y2="21" stroke="#fff" stroke-width="2"/><line x1="34" y1="21" x2="46" y2="21" stroke="#fff" stroke-width="2"/></svg>'),
+  firewall:mkIcon('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 56"><rect x="4" y="4" width="48" height="48" rx="4" fill="#EF4444" stroke="#B91C1C" stroke-width="2"/><line x1="4" y1="18" x2="52" y2="18" stroke="#fff" stroke-width="1" opacity=".4"/><line x1="4" y1="30" x2="52" y2="30" stroke="#fff" stroke-width="1" opacity=".4"/><line x1="4" y1="42" x2="52" y2="42" stroke="#fff" stroke-width="1" opacity=".4"/><line x1="20" y1="4" x2="20" y2="18" stroke="#fff" stroke-width="1" opacity=".4"/><line x1="36" y1="4" x2="36" y2="18" stroke="#fff" stroke-width="1" opacity=".4"/><line x1="28" y1="18" x2="28" y2="30" stroke="#fff" stroke-width="1" opacity=".4"/><line x1="12" y1="30" x2="12" y2="42" stroke="#fff" stroke-width="1" opacity=".4"/><line x1="44" y1="30" x2="44" y2="42" stroke="#fff" stroke-width="1" opacity=".4"/><line x1="20" y1="42" x2="20" y2="52" stroke="#fff" stroke-width="1" opacity=".4"/><line x1="36" y1="42" x2="36" y2="52" stroke="#fff" stroke-width="1" opacity=".4"/></svg>'),
+  pc:mkIcon('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 52"><rect x="6" y="4" width="36" height="28" rx="2" fill="#6366F1" stroke="#4338CA" stroke-width="2"/><rect x="10" y="8" width="28" height="20" fill="#C7D2FE"/><rect x="20" y="32" width="8" height="6" fill="#4338CA"/><rect x="12" y="38" width="24" height="4" rx="2" fill="#4338CA"/></svg>'),
+  cloud:mkIcon('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 48"><ellipse cx="32" cy="32" rx="28" ry="14" fill="#F59E0B" stroke="#D97706" stroke-width="2"/><ellipse cx="20" cy="22" rx="14" ry="12" fill="#F59E0B" stroke="#D97706" stroke-width="2"/><ellipse cx="44" cy="22" rx="14" ry="12" fill="#F59E0B" stroke="#D97706" stroke-width="2"/><ellipse cx="32" cy="18" rx="12" ry="10" fill="#F59E0B"/></svg>'),
+  generic:mkIcon('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60"><circle cx="30" cy="30" r="24" fill="#9CA3AF" stroke="#6B7280" stroke-width="2"/></svg>')
+};
+
+/* ===== Device Classification ===== */
+function classifyModel(model){
+  var m=(model||'').toUpperCase();
+  if(m==='ROUTER'||m.startsWith('AR')||m.startsWith('NE'))return 'router';
+  if(m==='PC'||m==='CLIENT'||m==='MCS'||m==='SERVER')return 'pc';
+  if(m.startsWith('USG')||m.startsWith('FW'))return 'firewall';
+  if(m==='CLOUD'||m.startsWith('CLOUD'))return 'cloud';
+  if(/^(S|CE|LS|QS)\d/.test(m))return 'switch';
+  return 'generic';
+}
+
+/* ===== Interface Name Resolution ===== */
+function resolveIf(dev,globalIdx){
+  var cum=0;
+  for(var i=0;i<dev.interfaces.length;i++){
+    var iface=dev.interfaces[i];
+    if(globalIdx<cum+iface.count){
+      var local=globalIdx-cum;
+      var base=classifyModel(dev.model)==='switch'?1:0;
+      var abbr=iface.name==='Ethernet'?'Eth':iface.name;
+      return abbr+'0/0/'+(local+base);
+    }
+    cum+=iface.count;
+  }
+  return 'if'+globalIdx;
+}
+
+function listIfaces(dev){
+  var result=[],idx=0;
+  var base=classifyModel(dev.model)==='switch'?1:0;
+  for(var i=0;i<dev.interfaces.length;i++){
+    var iface=dev.interfaces[i];
+    var abbr=iface.name==='Ethernet'?'Eth':iface.name;
+    for(var j=0;j<iface.count;j++){
+      result.push({name:abbr+'0/0/'+(j+base),idx:idx++});
+    }
+  }
+  return result;
+}
+
+/* ===== .topo XML Parser ===== */
+function parseTopo(xmlText){
+  xmlText=xmlText.replace(/<\?xml[^?]*\?>/,'<?xml version="1.0"?>');
+  var doc=new DOMParser().parseFromString(xmlText,'text/xml');
+  var err=doc.querySelector('parsererror');
+  if(err)throw new Error('XML parse error: '+err.textContent.slice(0,120));
+
+  var devices=[],devById={};
+  doc.querySelectorAll('devices > dev').forEach(function(el){
+    var dev={
+      id:el.getAttribute('id'),
+      name:el.getAttribute('name')||'?',
+      model:el.getAttribute('model')||'',
+      comPort:el.getAttribute('com_port')||'',
+      x:parseFloat(el.getAttribute('cx'))||0,
+      y:parseFloat(el.getAttribute('cy'))||0,
+      interfaces:[]
+    };
+    el.querySelectorAll('slot > interface').forEach(function(iEl){
+      dev.interfaces.push({
+        type:iEl.getAttribute('sztype'),
+        name:iEl.getAttribute('interfacename'),
+        count:parseInt(iEl.getAttribute('count'),10)||0
+      });
+    });
+    devices.push(dev);
+    devById[dev.id]=dev;
+  });
+
+  var links=[];
+  doc.querySelectorAll('lines > line').forEach(function(el){
+    var sId=el.getAttribute('srcDeviceID');
+    var dId=el.getAttribute('destDeviceID');
+    var pair=el.querySelector('interfacePair');
+    if(!pair)return;
+    var sD=devById[sId],dD=devById[dId];
+    var sIdx=parseInt(pair.getAttribute('srcIndex'),10)||0;
+    var dIdx=parseInt(pair.getAttribute('tarIndex'),10)||0;
+    links.push({
+      srcId:sId,dstId:dId,
+      srcName:sD?sD.name:sId,dstName:dD?dD.name:dId,
+      srcIf:sD?resolveIf(sD,sIdx):'if'+sIdx,
+      dstIf:dD?resolveIf(dD,dIdx):'if'+dIdx,
+      type:pair.getAttribute('lineName')||'Copper'
+    });
+  });
+
+  var tips=[];
+  doc.querySelectorAll('txttips > txttip').forEach(function(el){
+    var content=el.getAttribute('content')||'';
+    if(!content.trim())return;
+    tips.push({
+      content:content,
+      x:((parseInt(el.getAttribute('left'),10)||0)+(parseInt(el.getAttribute('right'),10)||0))/2,
+      y:((parseInt(el.getAttribute('top'),10)||0)+(parseInt(el.getAttribute('bottom'),10)||0))/2
+    });
+  });
+
+  return {devices:devices,links:links,tips:tips,devById:devById};
+}
+
+/* ===== Globals ===== */
+var network=null,deviceMap={};
+var $canvas=document.getElementById('canvas');
+var $status=document.getElementById('status');
+var $stats=document.getElementById('stats');
+var $overlay=document.getElementById('drop-overlay');
+var $container=document.getElementById('container');
+var $info=document.getElementById('info');
+var $empty=document.getElementById('empty');
+var $legend=document.getElementById('legend');
+var $sync=document.getElementById('sync-badge');
+
+/* ===== Render Topology ===== */
+function renderTopology(data){
+  deviceMap={};
+  $empty.classList.add('hidden');
+  $legend.classList.add('show');
+  var nodes=new vis.DataSet();
+  var edges=new vis.DataSet();
+
+  data.devices.forEach(function(dev){
+    var type=classifyModel(dev.model);
+    deviceMap[dev.id]=dev;
+    nodes.add({
+      id:dev.id,label:dev.name+'\n'+dev.model,
+      x:dev.x,y:dev.y,
+      shape:'image',image:ICONS[type]||ICONS.generic,
+      size:type==='switch'?28:25,
+      font:{size:13,face:'Consolas,Microsoft YaHei,SimHei,monospace',color:'var(--text)',multi:false,bold:{color:'var(--text)'}},
+      title:dev.name+' ('+dev.model+') | COM: '+dev.comPort
+    });
+  });
+
+  data.tips.forEach(function(tip,i){
+    nodes.add({
+      id:'_tip_'+i,label:tip.content,
+      x:tip.x,y:tip.y,shape:'box',
+      color:{background:'#FFFDE7',border:'#FBC02D',highlight:{background:'#FFF9C4',border:'#F9A825'}},
+      borderWidth:1,margin:{top:3,bottom:3,left:6,right:6},
+      font:{size:11,face:'Consolas,Microsoft YaHei,SimHei,monospace',color:'#333'},
+      chosen:false
+    });
+  });
+
+  data.links.forEach(function(link,i){
+    var serial=link.type==='Serial';
+    edges.add({
+      id:'e'+i,from:link.srcId,to:link.dstId,
+      label:link.srcIf+'  --  '+link.dstIf,
+      font:{size:10,face:'Consolas,Microsoft YaHei,SimHei,monospace',color:'#64748b',strokeWidth:3,strokeColor:'#fff',align:'middle'},
+      color:{color:serial?'#E53E3E':'#94a3b8',hover:'#475569',highlight:'#3B82F6'},
+      width:2,dashes:serial,
+      smooth:{type:'continuous'},
+      title:link.srcName+':'+link.srcIf+'  <-->  '+link.dstName+':'+link.dstIf+' ('+link.type+')'
+    });
+  });
+
+  if(network)network.destroy();
+  network=new vis.Network($canvas,{nodes:nodes,edges:edges},{
+    physics:{enabled:false},
+    interaction:{hover:true,tooltipDelay:150,multiselect:true,navigationButtons:true,keyboard:{enabled:false}},
+    nodes:{borderWidth:0},
+    edges:{selectionWidth:2}
+  });
+
+  network.on('click',function(p){
+    if(p.nodes.length&&!String(p.nodes[0]).startsWith('_tip_')){
+      var dev=deviceMap[p.nodes[0]];
+      if(dev){showInfo(dev);return;}
+    }
+    closeInfo();
+  });
+
+  setTimeout(function(){network.fit({animation:{duration:300}});},120);
+  document.getElementById('btnFit').disabled=false;
+  document.getElementById('btnClear').disabled=false;
+  updateStats(data);
+  setStatus(data.devices.length+' devices, '+data.links.length+' links loaded');
+}
+
+/* ===== Stats Bar ===== */
+function updateStats(data){
+  var counts={router:0,switch:0,firewall:0,pc:0,cloud:0,generic:0};
+  data.devices.forEach(function(d){counts[classifyModel(d.model)]++;});
+  var colors={router:'#3B82F6',switch:'#10B981',firewall:'#EF4444',pc:'#6366F1',cloud:'#F59E0B',generic:'#9CA3AF'};
+  var names={router:'Router',switch:'Switch',firewall:'FW',pc:'PC',cloud:'Cloud',generic:'Other'};
+  var html='';
+  for(var k in counts){
+    if(counts[k]>0) html+='<div class="stat"><div class="stat-dot" style="background:'+colors[k]+'"></div>'+names[k]+' x'+counts[k]+'</div>';
+  }
+  html+='<div class="stat" style="margin-left:4px">Links x'+data.links.length+'</div>';
+  if(data.tips.length) html+='<div class="stat">Labels x'+data.tips.length+'</div>';
+  $stats.innerHTML=html;
+}
+
+/* ===== Info Panel ===== */
+var TYPE_ZH={router:'Router',switch:'Switch',firewall:'Firewall',pc:'PC',cloud:'Cloud',generic:'Device'};
+function showInfo(dev){
+  var ifaces=listIfaces(dev);
+  var t=classifyModel(dev.model);
+  document.getElementById('info-title').textContent=dev.name+' ('+TYPE_ZH[t]+')';
+  document.getElementById('info-body').innerHTML=
+    '<div class="info-row"><span class="lbl">Model</span><span class="val">'+dev.model+'</span></div>'+
+    '<div class="info-row"><span class="lbl">COM</span><span class="val">TCP '+dev.comPort+'</span></div>'+
+    '<div class="info-row"><span class="lbl">Pos</span><span class="val">('+dev.x+', '+dev.y+')</span></div>'+
+    '<div class="iface-title">Interfaces ('+ifaces.length+')</div>'+
+    '<ul class="iface-list">'+ifaces.map(function(f){return '<li>'+f.name+'</li>'}).join('')+'</ul>';
+  $info.style.display='block';
+}
+function closeInfo(){$info.style.display='none';}
+
+/* ===== Sync to Server ===== */
+function syncToServer(data){
+  var payload={
+    devices:data.devices.map(function(d){return{id:d.id,name:d.name,model:d.model,comPort:d.comPort,x:d.x,y:d.y,interfaces:d.interfaces}}),
+    links:data.links,
+    tips:data.tips
+  };
+  fetch('/api/topology',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+  .then(function(r){return r.json()})
+  .then(function(j){if(j.ok){$sync.style.display='inline-flex';setStatus('synced to topology.json')}})
+  .catch(function(){});
+}
+
+/* ===== File Handling ===== */
+function handleFile(file){
+  var name=file.name.toLowerCase();
+  if(name.endsWith('.topo')||name.endsWith('.xml')){
+    setStatus('Parsing '+file.name+' ...');
+    readAsText(file).then(function(text){
+      var data=parseTopo(text);
+      renderTopology(data);
+      syncToServer(data);
+    }).catch(function(e){
+      setStatus('Parse failed: '+e.message);
+      console.error(e);
+    });
+  }else if(file.type&&file.type.startsWith('image/')){
+    showBgImage(URL.createObjectURL(file),file.name);
+  }else{
+    setStatus('Unsupported: '+name);
+  }
+}
+
+function readAsText(file){
+  return new Promise(function(resolve,reject){
+    var reader=new FileReader();
+    reader.onload=function(e){
+      var buf=new Uint8Array(e.target.result),text;
+      if(buf.length>=2&&buf[0]===0xFF&&buf[1]===0xFE) text=new TextDecoder('utf-16le').decode(buf);
+      else if(buf.length>=2&&buf[0]===0xFE&&buf[1]===0xFF) text=new TextDecoder('utf-16be').decode(buf);
+      else if(buf.length>=4&&buf[1]===0&&buf[3]===0) text=new TextDecoder('utf-16le').decode(buf);
+      else text=new TextDecoder('utf-8').decode(buf);
+      if(text.charCodeAt(0)===0xFEFF) text=text.substring(1);
+      resolve(text);
+    };
+    reader.onerror=function(){reject(new Error('File read error'))};
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+/* ===== Toolbar Actions ===== */
+function fitView(){if(network)network.fit({animation:{duration:400}})}
+var $bgImg=document.getElementById('bg-img');
+var $bgBar=document.getElementById('bg-bar');
+function showBgImage(url,name){
+  $bgImg.src=url;$bgImg.style.display='block';
+  $bgImg.style.opacity=document.getElementById('bgOpacity').value/100;
+  $bgBar.style.display='inline-flex';
+  $empty.classList.add('hidden');
+  document.getElementById('btnClear').disabled=false;
+  setStatus('Background: '+(name||'clipboard'));
+}
+function setBgOpacity(v){$bgImg.style.opacity=v/100}
+function clearBg(){
+  $bgImg.style.display='none';$bgImg.src='';
+  $bgBar.style.display='none';
+  if(!network){$empty.classList.remove('hidden');document.getElementById('btnClear').disabled=true;}
+  setStatus(network?'Background removed':'就绪');
+}
+function pasteFromClipboard(){
+  if(navigator.clipboard&&navigator.clipboard.read){
+    navigator.clipboard.read().then(function(items){
+      for(var i=0;i<items.length;i++){
+        var types=items[i].types;
+        for(var j=0;j<types.length;j++){
+          if(types[j].startsWith('image/')){
+            items[i].getType(types[j]).then(function(blob){showBgImage(URL.createObjectURL(blob),'clipboard')});
+            return;
+          }
+        }
+      }
+      setStatus('Clipboard has no image');
+    }).catch(function(){setStatus('Clipboard access denied (try Ctrl+V)')});
+  }else{setStatus('Use Ctrl+V to paste');}
+}
+function clearAll(){
+  if(network){network.destroy();network=null;}
+  deviceMap={};
+  clearBg();
+  closeInfo();
+  $empty.classList.remove('hidden');
+  $legend.classList.remove('show');
+  $sync.style.display='none';
+  $stats.innerHTML='';
+  document.getElementById('btnFit').disabled=true;
+  document.getElementById('btnClear').disabled=true;
+  setStatus('就绪');
+}
+function setStatus(msg){$status.textContent=msg}
+
+/* ===== Drag & Drop ===== */
+var dragN=0;
+document.addEventListener('dragenter',function(e){e.preventDefault();if(++dragN===1)$overlay.classList.add('active')});
+document.addEventListener('dragleave',function(e){e.preventDefault();if(--dragN<=0){dragN=0;$overlay.classList.remove('active')}});
+document.addEventListener('dragover',function(e){e.preventDefault()});
+document.addEventListener('drop',function(e){
+  e.preventDefault();dragN=0;$overlay.classList.remove('active');
+  if(e.dataTransfer.files.length)handleFile(e.dataTransfer.files[0]);
+});
+document.addEventListener('paste',function(e){
+  var items=e.clipboardData&&e.clipboardData.items;
+  if(!items)return;
+  for(var i=0;i<items.length;i++){
+    if(items[i].type.indexOf('image')!==-1){
+      var blob=items[i].getAsFile();
+      if(blob){showBgImage(URL.createObjectURL(blob),'clipboard');e.preventDefault();break;}
+    }
+  }
+});
+document.getElementById('fileInput').addEventListener('change',function(e){
+  if(e.target.files.length)handleFile(e.target.files[0]);
+  e.target.value='';
+});
+
+/* ===== Keyboard Shortcuts ===== */
+document.addEventListener('keydown',function(e){
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
+  if(e.key==='f'||e.key==='F')fitView();
+  if(e.key==='Escape')closeInfo();
+  if(e.key==='Delete')clearAll();
+});
+
+/* ===== Init ===== */
+if(typeof vis==='undefined')setStatus('vis-network CDN failed');
+</script>
+</body>
+</html>
