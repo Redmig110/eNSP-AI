@@ -24,6 +24,12 @@ _WONT = 0xFC
 _DO = 0xFD
 _DONT = 0xFE
 
+# ANSI/VT100 转义序列。设备在行编辑时会发 \x1b[42D + 空格 + \x1b[42D 重画整行，
+# 不过滤的话会混进 display current-configuration 之类的输出里。
+#   覆盖 CSI (\x1b[ + 参数 + 终止符) 和双字节转义 (\x1b + 单字符)。
+_ANSI_RE = re.compile(rb'\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]')
+_ANSI_STR_RE = re.compile('\x1b\\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\\\-_]')
+
 
 def _strip_iac(data: bytes) -> bytes:
     """过滤 Telnet IAC 序列"""
@@ -37,6 +43,16 @@ def _strip_iac(data: bytes) -> bytes:
             result.append(data[i])
             i += 1
     return bytes(result)
+
+
+def _strip_ansi(data: bytes) -> bytes:
+    """过滤 ANSI/VT100 转义序列（字节层面）"""
+    return _ANSI_RE.sub(b'', data)
+
+
+def _sanitize(data: bytes) -> bytes:
+    """过滤 Telnet IAC + ANSI 转义，得到可直接解码的干净字节"""
+    return _strip_ansi(_strip_iac(data))
 
 
 class HuaweiConsole:
@@ -104,12 +120,21 @@ class HuaweiConsole:
         发送一组配置命令
 
         自动进入 system-view，执行完后 return 退出。
+        如果设备已在 system-view（提示符为 [xxx]），则跳过进入。
         """
         all_output = []
 
-        # 进入系统视图
-        self._send_line('system-view')
-        all_output.append(self._read_until_prompt(timeout=5))
+        # 检查当前提示符，判断是否已在 system-view
+        # 先发送回车获取当前提示符
+        self._send_line('')
+        prompt_output = self._read_until_prompt(timeout=3)
+        all_output.append(prompt_output)
+
+        # 如果提示符是 <xxx> 格式（用户视图），需要进入 system-view
+        # 如果提示符是 [xxx] 格式（系统视图），跳过
+        if re.search(rb'<\S+>', prompt_output.encode('utf-8', errors='ignore')):
+            self._send_line('system-view')
+            all_output.append(self._read_until_prompt(timeout=5))
 
         for cmd in commands:
             self._send_line(cmd)
@@ -146,7 +171,7 @@ class HuaweiConsole:
                 chunk = self._sock.recv(4096)
                 if not chunk:
                     break
-                chunk = _strip_iac(chunk)
+                chunk = _sanitize(chunk)
                 buf += chunk
 
                 # 处理 More 分页：发送空格继续
@@ -155,8 +180,22 @@ class HuaweiConsole:
                     # 清掉 More 提示本身（设备会用回车覆盖）
                     continue
 
-                # 检测提示符
+                # 检测提示符后等待一小段时间，确认没有更多数据
+                # 这解决了 AR 路由器命令回显中包含提示符的问题
                 if _PROMPT_RE.search(buf):
+                    # 等待 0.3 秒看是否有更多数据
+                    self._sock.settimeout(0.3)
+                    try:
+                        extra = self._sock.recv(4096)
+                        if extra:
+                            extra = _sanitize(extra)
+                            buf += extra
+                            # 如果收到更多数据，继续主循环
+                            self._sock.settimeout(1.0)
+                            continue
+                    except socket.timeout:
+                        # 没有更多数据，提示符是真正的结束标记
+                        pass
                     break
             except socket.timeout:
                 # 超时但还没到 deadline，继续等
@@ -168,6 +207,8 @@ class HuaweiConsole:
 
         self._sock.settimeout(self.timeout)
         text = buf.decode('utf-8', errors='ignore')
+        # 兜底再滤一遍 ANSI：字节级过滤按 chunk 进行，转义序列若跨 chunk 被切开会漏网
+        text = _ANSI_STR_RE.sub('', text)
         # 清理 More 残留
         text = re.sub(r'\s*---- More ----\s*', '', text)
         # 清理回车符
@@ -183,10 +224,11 @@ class HuaweiConsole:
                 chunk = self._sock.recv(4096)
                 if not chunk:
                     break
-                buf += _strip_iac(chunk)
+                buf += _sanitize(chunk)
         except (socket.timeout, OSError):
             pass
         self._sock.settimeout(self.timeout)
         text = buf.decode('utf-8', errors='ignore')
+        text = _ANSI_STR_RE.sub('', text)
         text = text.replace('\r\n', '\n').replace('\r', '')
         return text
