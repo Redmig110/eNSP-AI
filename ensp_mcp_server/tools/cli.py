@@ -5,6 +5,7 @@ eNSP CLI 工具集
 Ping/Traceroute 诊断、健康检查等核心功能。
 """
 import logging
+import re
 import socket
 from typing import Optional
 
@@ -12,6 +13,25 @@ from ..config import _resolve_device, _device_registry, _get_device_port
 from ..console import HuaweiConsole
 
 logger = logging.getLogger("ensp_mcp.cli")
+
+# 设备拒绝命令时的典型回显。Fit AP 这类精简 CLI 不认 display clock，
+# 但它的报错同样带着提示符返回，光看「有没有异常」会误判成健康。
+_CLI_REJECT_RE = re.compile(
+    r"Error:|Unrecognized command|Wrong parameter|Incomplete command|"
+    r"Ambiguous command|Too many parameters|Invalid input|^\s*\^",
+    re.MULTILINE,
+)
+
+
+def _cli_rejected(output: str) -> bool:
+    """判断设备是否拒绝了这条命令"""
+    return bool(_CLI_REJECT_RE.search(output))
+
+
+# 健康检查的探测命令，按兼容性从宽到窄依次尝试：
+# display version 在 AR / S5700 / AC6005 / AP6050DN 上都可用，
+# display clock 更轻但在 Fit AP 上不存在。
+_HEALTH_PROBES = ("display version", "display clock")
 
 
 def _connect(device_ip: str, timeout: int = 15) -> HuaweiConsole:
@@ -54,15 +74,26 @@ def multi_device_push_config(devices: list[dict]) -> str:
 
 
 def save_config(device_ip: str) -> str:
-    """保存设备配置（处理 [Y/N] 交互确认）"""
+    """保存设备配置（处理 [Y/N] 和 (y/n) 交互确认）"""
     try:
         with _connect(device_ip) as c:
-            output = c.send_command_timing("save", delay=2.0)
-            if "[Y/N]" in output or "[y/n]" in output:
-                c._send_line("Y")
-                import time
-                time.sleep(3)
-                output += c._read_available()
+            output = c.send_command_timing("save", delay=3.0)
+            # 支持多种确认格式: [Y/N], [y/n], (y/n), (Y/N)
+            has_confirm_prompt = any(pattern in output for pattern in ["[Y/N]", "[y/n]", "(y/n)", "(Y/N)"])
+
+            if has_confirm_prompt:
+                # 检查是否是 AR 路由器（提示后立即返回命令行）
+                # AR 路由器的 save 命令不等待确认，直接显示提示
+                if "<" in output and "^" not in output:
+                    # AR 路由器行为：配置已自动保存，无需确认
+                    pass
+                else:
+                    # 交换机行为：需要发送确认
+                    c._send_line("Y")
+                    import time
+                    time.sleep(3)
+                    output += c._read_available()
+
             return f"[{device_ip}] 配置保存结果:\n{output}"
     except Exception as e:
         return f"保存配置失败 [{device_ip}]: {e}"
@@ -142,12 +173,22 @@ def health_check(device_ip: str) -> str:
         results.append(f"  TCP 连接 ({host}:{port}): FAIL - {e}")
         return "\n".join(results)
 
-    # 2. 命令测试
+    # 2. 命令测试：依次尝试探测命令，取第一条设备真正接受的
     try:
         with HuaweiConsole(host, port, timeout=10) as c:
-            output = c.send_command("display clock", timeout=10)
-            results.append(f"  CLI 命令测试: OK")
-            results.append(f"  设备时间: {output.strip()}")
+            last_err = ""
+            for probe in _HEALTH_PROBES:
+                output = c.send_command(probe, timeout=10)
+                if _cli_rejected(output):
+                    last_err = output.strip()
+                    continue
+                results.append("  CLI 命令测试: OK")
+                results.append(f"  {probe}: {output.strip()}")
+                break
+            else:
+                results.append("  CLI 命令测试: FAIL - 设备不接受任何探测命令")
+                if last_err:
+                    results.append(f"  最后一条回显: {last_err}")
     except Exception as e:
         results.append(f"  CLI 命令测试: FAIL - {e}")
 
