@@ -175,9 +175,12 @@ class HuaweiConsole:
                 buf += chunk
 
                 # 处理 More 分页：发送空格继续
-                if _MORE_RE.search(buf.split(b'\n')[-1] if buf else b''):
+                if _MORE_RE.search(buf):
                     self._sock.sendall(b' ')
-                    # 清掉 More 提示本身（设备会用回车覆盖）
+                    # 就地摘掉 More 标记。留到最后再删的话，下面的兜底清理
+                    # 会连标记周围的换行一起吃掉，把相邻两行粘成一行 ——
+                    # 凡是超过一屏的 display 输出都会被这么污染。
+                    buf = _MORE_RE.sub(b'', buf)
                     continue
 
                 # 检测提示符后等待一小段时间，确认没有更多数据
@@ -209,8 +212,9 @@ class HuaweiConsole:
         text = buf.decode('utf-8', errors='ignore')
         # 兜底再滤一遍 ANSI：字节级过滤按 chunk 进行，转义序列若跨 chunk 被切开会漏网
         text = _ANSI_STR_RE.sub('', text)
-        # 清理 More 残留
-        text = re.sub(r'\s*---- More ----\s*', '', text)
+        # 兜底清理偶发漏网的 More 残留。[^\S\n] 表示「除换行外的空白」——
+        # 这里绝不能用 \s，否则会把标记两边的换行也删掉，导致相邻行粘连。
+        text = re.sub(r'[^\S\n]*---- More ----[^\S\n]*\n?', '', text)
         # 清理回车符
         text = text.replace('\r\n', '\n').replace('\r', '')
         return text
