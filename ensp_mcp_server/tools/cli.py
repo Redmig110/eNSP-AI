@@ -123,7 +123,10 @@ def ping_from_device(
 ) -> str:
     """从设备发起 Ping 测试"""
     try:
-        command = f"ping -c {count} -t 2"
+        # VRP 的 ping -t 单位是毫秒。这里原来写的是 `-t 2`(= 2ms 超时),
+        # 导致每次 ping 都在回应到达前放弃,一律报 100% 丢包 —— 表现为"网络不通",
+        # 实为参数错误(连 ping 本机接口地址都会失败)。
+        command = f"ping -c {count} -t 2000"
         if source_ip:
             command += f" -a {source_ip}"
         command += f" {target_ip}"
