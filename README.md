@@ -195,6 +195,8 @@ eNSP-AI/
 ├── requirements.txt          # Python 依赖
 ├── .mcp.json                 # Claude Code 项目级 MCP 配置
 ├── CLAUDE.md                 # 给 AI agent 的项目说明
+├── git.md                    # 提交规范
+├── logs/                     # 项目日志：dev/ 开发、lab/ 实验、troubleshoot/ 排障
 ├── topo-viewer.html          # 拓扑可视化（浏览器）
 ├── topo-server.py            # 可视化本地服务器
 └── ensp_mcp_server/          # MCP Server 主包
