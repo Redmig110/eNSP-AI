@@ -1,7 +1,7 @@
 """
 eNSP MCP Server 入口
 
-精简版：15 个工具，使用 HuaweiConsole 直连 eNSP 控制台。
+精简版：17 个工具，使用 HuaweiConsole 直连 eNSP 控制台。
 """
 import asyncio
 import logging
@@ -17,12 +17,13 @@ from .tools.cli import (
     health_check, multi_health_check,
 )
 from .tools.topology import discover_topology, find_topo_files
+from .tools.inspection import verify_expectations, inspect_topology
 
 logger = logging.getLogger("ensp_mcp.server")
 
 server = Server(config.server_name)
 
-# ==================== 工具定义（15 个） ====================
+# ==================== 工具定义（17 个） ====================
 
 TOOLS = [
     # --- 设备注册 ---
@@ -242,6 +243,73 @@ TOOLS = [
             },
         },
     ),
+
+    # --- 巡检 / 验收 ---
+    Tool(
+        name="verify_expectations",
+        description=(
+            "跑一组「命令 + 预期」并逐条判定通过/不通过,用于实验验收。\n"
+            "每条检查:device / command / desc(这条在验什么) / "
+            "expect_contains(这些子串都要出现) / expect_not_contains(这些都不能出现) / "
+            "expect_match(正则,至少要匹配到一次)。\n"
+            "三条预期都没写的检查记 INFO —— 只回显不判定,适合先看看回显长什么样。\n"
+            "检查可内联传(checks),也可读 JSON 清单文件(checklist_file),两者会合并(文件在前)。\n"
+            "注意:expect_match 是普通正则。做数值判据务必加词边界,写成 \\b120\\b —— "
+            "不加的话 120 会前缀命中 1200,静默误判成通过。"
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "checks": {
+                    "type": "array",
+                    "description": "内联的检查列表",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "device": {"type": "string", "description": "设备名,如 LSW1"},
+                            "command": {"type": "string", "description": "要执行的 display 命令"},
+                            "desc": {"type": "string", "description": "这条检查在验什么(可选)"},
+                            "expect_contains": {
+                                "type": "array", "items": {"type": "string"},
+                                "description": "回显里必须都出现的子串(可选)",
+                            },
+                            "expect_not_contains": {
+                                "type": "array", "items": {"type": "string"},
+                                "description": "回显里都不能出现的子串(可选)",
+                            },
+                            "expect_match": {
+                                "type": "string",
+                                "description": "必须匹配到的正则(可选)。数值判据请加词边界,如 \\b120\\b",
+                            },
+                        },
+                        "required": ["device", "command"],
+                    },
+                },
+                "checklist_file": {
+                    "type": "string",
+                    "description": 'JSON 清单文件路径(可选)。顶层为数组,或 {"checks": [...]}',
+                },
+            },
+        },
+    ),
+    Tool(
+        name="inspect_topology",
+        description=(
+            "通用巡检,不用写预期。对每台设备体检四项:可达性(以 display 是否真的执行为准)、"
+            "「有 IP 但协议 down」的接口、最近日志里值得看的行、当前配置与已保存配置是否一致。\n"
+            "不指定设备则检查所有已注册设备。"
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "device_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "设备名称列表(可选,为空则检查所有已注册设备)",
+                },
+            },
+        },
+    ),
 ]
 
 
@@ -269,6 +337,8 @@ TOOL_DISPATCH = {
     "multi_health_check": lambda a: multi_health_check(a.get("device_names")),
     "discover_topology": lambda a: discover_topology(a["file_path"]),
     "find_topo_files": lambda a: find_topo_files(a.get("search_dir", "")),
+    "verify_expectations": lambda a: verify_expectations(a.get("checks"), a.get("checklist_file")),
+    "inspect_topology": lambda a: inspect_topology(a.get("device_names")),
 }
 
 

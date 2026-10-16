@@ -4,7 +4,7 @@
 
 ## 功能概览
 
-- **MCP Server** — 通过自然语言操作 eNSP 设备（CLI 执行、配置下发、网络诊断、拓扑发现、健康检查）
+- **MCP Server** — 通过自然语言操作 eNSP 设备（CLI 执行、配置下发、网络诊断、拓扑发现、健康检查、实验验收与巡检）
 - **Topo Viewer** — 浏览器拓扑可视化，拖入 .topo 文件即可渲染交互式网络图，自动同步拓扑数据给 AI
 
 ## 前置条件
@@ -161,6 +161,33 @@ python topo-server.py
 | `discover_topology` | 解析 eNSP .topo 文件 |
 | `find_topo_files` | 搜索本地 .topo 文件 |
 
+### 巡检与验收
+| 工具 | 说明 |
+|------|------|
+| `verify_expectations` | 跑一组「命令 + 预期」逐条判定通过/不通过，用于实验验收 |
+| `inspect_topology` | 通用体检：可达性、异常接口、日志报错、配置是否已保存 |
+
+**实验验收**：给一组检查，每条写明要跑的命令和预期。检查可以内联传，也可以写成 JSON 清单文件反复使用：
+
+```json
+{
+  "checks": [
+    { "device": "LSW1", "command": "display vrrp",
+      "desc": "VLAN10 网关优先级没被改掉",
+      "expect_contains": ["PriorityConfig : 120"] },
+    { "device": "LSW1", "command": "display ospf peer",
+      "desc": "OSPF 邻接应全为 Full",
+      "expect_match": "\\bFull\\b" }
+  ]
+}
+```
+
+支持三种预期：`expect_contains`（这些子串都要出现）、`expect_not_contains`（都不能出现）、`expect_match`（正则至少匹配一次）。写了预期才算判定；三条都没写的检查记 `INFO`，只贴回显不判定。
+
+> **数值判据请加词边界**，写成 `\b120\b`。不加的话 `120` 会前缀命中 `1200`，静默误判成通过。
+
+**通用巡检**不需要写任何预期，直接跑即可。
+
 ## 项目结构
 
 ```
@@ -178,6 +205,7 @@ eNSP-AI/
     ├── exceptions.py          # 自定义异常
     └── tools/
         ├── cli.py             # CLI 执行 & 配置工具
+        ├── inspection.py      # 巡检 & 实验验收
         └── topology.py        # .topo 解析 & 搜索
 ```
 
