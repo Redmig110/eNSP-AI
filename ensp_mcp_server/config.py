@@ -46,19 +46,31 @@ _REGISTRY_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "devic
 # 支持两种格式:
 #   简单: { "R1": 2000 }
 #   详细: { "R1": { "port": 2000, "username": "admin", "password": "xxx" } }
+#
+# ⚠ 只能**原地修改**这个 dict，绝不能重新绑定（`_device_registry = ...`）：
+#   cli.py / inspection.py 用的是 `from ..config import _device_registry`，
+#   导入时就把名字绑死在这个对象上。一旦重新绑定，它们手里还是旧字典 ——
+#   表现是 auto_discover 之后 inspect_topology / multi_health_check 仍在巡检
+#   discover 之前那批设备，_looks_registered 也会把刚发现的设备误报成未注册。
 _device_registry: dict[str, int | dict] = {}
 
 
+def _replace_registry(data: dict):
+    """原地替换注册表内容 —— 保持对象身份不变，见上面的注释。"""
+    _device_registry.clear()
+    _device_registry.update(data)
+
+
 def _load_registry():
-    global _device_registry
     if os.path.exists(_REGISTRY_FILE):
         try:
             with open(_REGISTRY_FILE, "r", encoding="utf-8") as f:
-                _device_registry = json.load(f)
+                data = json.load(f)
+            _replace_registry(data)
             logger.info("设备注册表已加载: %d 台设备", len(_device_registry))
         except Exception as e:
             logger.error("加载注册表失败: %s", e)
-            _device_registry = {}
+            _replace_registry({})
 
 
 def _save_registry():
@@ -193,7 +205,6 @@ def auto_discover_devices() -> str:
             discovered[f"Device{default_count}"] = port
 
     # 4. 合并注册表（保留手动注册的设备）
-    global _device_registry
     discovered_ports = set(discovered.values())
     merged = {}
     for name, entry in _device_registry.items():
@@ -202,7 +213,8 @@ def auto_discover_devices() -> str:
     for name, port in discovered.items():
         merged[name] = port
 
-    _device_registry = merged
+    # 原地更新，不重新绑定 —— 见 _device_registry 定义处的注释
+    _replace_registry(merged)
     _save_registry()
 
     # 生成报告
