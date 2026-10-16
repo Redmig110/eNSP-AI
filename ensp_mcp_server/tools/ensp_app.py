@@ -314,6 +314,23 @@ def _board_state(pid: int) -> tuple[int, tuple[int, ...]] | None:
     return len(canvases), tuple(_count_device_labels(c) for c in canvases)
 
 
+def _handoff_happened(before, after) -> bool:
+    """交接是否真的发生了。纯函数，可单测。
+
+    `before` 为 None 表示调用前 eNSP 没在运行 —— 这时只能看 `after` 本身
+    （新实例起来且画布上确实有设备标签）。
+
+    **不能用「after 上有设备标签」这种绝对量判据**：eNSP 里本来就开着别的
+    拓扑时它恒为真，会把「根本没打开」静默误报成成功（2026-10-17 实测踩过）。
+    所以 eNSP 本来就在跑时，只认**差分**。
+    """
+    if after is None:
+        return False
+    if before is None:
+        return after[0] >= 1 and sum(after[1]) > 0
+    return after[0] > before[0] or after[1] != before[1]
+
+
 def _modal_dialogs(pid: int) -> list[tuple[int, str]]:
     """该进程下可见的 #32770 对话框 [(hwnd, 标题)]。用于识别挡住关闭的确认框。"""
     out = []
@@ -459,12 +476,7 @@ def open_topology(file_path: str) -> str:
         if not active:
             continue
         after = _board_state(active)
-        if after is None:
-            continue
-        if before is None:
-            if after[0] >= 1 and sum(after[1]) > 0:
-                break
-        elif after[0] > before[0] or after[1] != before[1]:
+        if _handoff_happened(before, after):
             break
     else:
         if not _active_ensp_pid():
