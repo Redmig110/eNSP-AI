@@ -1,7 +1,8 @@
-"""
+r"""
 eNSP Topo Viewer - Local Server
 启动后自动打开浏览器，拖入 .topo 文件后自动保存 topology.json
-Claude 可直接读取 A:\ensp-AI\topology.json 获取拓扑信息
+Claude 可直接读取脚本所在目录下的 topology.json 获取拓扑信息
+（raw 字符串：路径里的 \e 会被当成转义的 'e'，Python 3.12+ 会警告）
 """
 import http.server
 import json

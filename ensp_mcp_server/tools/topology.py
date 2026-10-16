@@ -2,13 +2,30 @@
 eNSP 拓扑发现工具
 
 解析 eNSP .topo XML 文件，提取设备、接口和链路信息。
+
+关于 .topo 文件的两个坑（都踩过）：
+1. 编码。文件头写的是 encoding="UNICODE"，但这是**假的** —— eNSP 实际写的是
+   GBK(ANSI)。直接把路径交给 ET.parse() 会抛 LookupError: unknown encoding: UNICODE。
+   所以这里自己读字节、自己判编码，再把它那条假声明换掉。
+2. 标签名。真实结构是 devices/dev、lines/line/interfacePair、txttips/txttip，
+   不是 <device>/<node>。前端 topo-viewer.html 里的解析器是同一套 schema。
 """
 import logging
 import os
+import re
+import unicodedata
 import xml.etree.ElementTree as ET
 from typing import Optional
 
 logger = logging.getLogger("ensp_mcp.topology")
+
+# 默认搜索的最大递归深度。eNSP 会在每个 .topo 旁边放一个以设备 UUID 命名的目录，
+# 深度限制要能跳过它们，又不能把 examples/<拓扑名>/x.topo 这种挡在外面。
+_MAX_DEPTH = 4
+# 列出的文件条数上限，超出只报总数
+_MAX_LIST = 60
+
+_DEV_PREFIX = ("S", "CE", "LS", "QS")
 
 
 def discover_topology(file_path: str) -> str:
@@ -19,7 +36,7 @@ def discover_topology(file_path: str) -> str:
         file_path: .topo 文件的完整路径
 
     Returns:
-        拓扑描述（设备列表、接口、链路关系）
+        拓扑描述（设备列表、接口、链路关系、文本标注）
     """
     if not os.path.exists(file_path):
         return f"文件不存在: {file_path}"
@@ -28,49 +45,28 @@ def discover_topology(file_path: str) -> str:
         return f"不是 .topo 文件: {file_path}"
 
     try:
-        tree = ET.parse(file_path)
-        root = tree.getroot()
+        raw = open(file_path, "rb").read()
+        root = ET.fromstring(_loadable_xml(raw))
     except ET.ParseError as e:
         return f"XML 解析失败: {e}"
+    except (LookupError, ValueError, OSError) as e:
+        # LookupError: 声明里出现了 Python 不认识的编码名
+        return f"文件读取/解析失败: {e}"
 
-    devices = []
+    devices = [_extract_device_info(el) for el in root.findall("devices/dev")]
+    devices = [d for d in devices if d]
+
     links = []
+    for line in root.findall("lines/line"):
+        links.extend(_extract_line_links(line, devices))
 
-    # 灵活查找设备节点（兼容不同 eNSP 版本）
-    device_nodes = _find_elements(root, ["devices/device", "device", "node", "nodes/node"])
-    for dev in device_nodes:
-        info = _extract_device_info(dev)
-        if info:
-            devices.append(info)
+    tips = []
+    for el in root.findall("txttips/txttip"):
+        content = _one_line(el.get("content") or "")
+        if content:
+            tips.append(content)
 
-    # 灵活查找链路节点
-    link_nodes = _find_elements(root, ["links/link", "link", "connection", "connections/connection"])
-    for link in link_nodes:
-        info = _extract_link_info(link)
-        if info:
-            links.append(info)
-
-    # 生成报告
-    lines = [f"拓扑文件: {os.path.basename(file_path)}"]
-    lines.append(f"设备数量: {len(devices)}")
-    lines.append(f"链路数量: {len(links)}")
-
-    if devices:
-        lines.append("\n=== 设备列表 ===")
-        lines.append(f"{'名称':<15} {'类型':<12} {'型号':<20}")
-        lines.append("-" * 47)
-        for d in devices:
-            lines.append(f"{d['name']:<15} {d['type']:<12} {d['model']:<20}")
-            if d.get("interfaces"):
-                for iface in d["interfaces"]:
-                    lines.append(f"  └─ {iface}")
-
-    if links:
-        lines.append("\n=== 链路连接 ===")
-        for l in links:
-            lines.append(f"  {l['src_device']}:{l['src_port']} ←→ {l['dst_device']}:{l['dst_port']}")
-
-    return "\n".join(lines)
+    return _format_report(file_path, root, devices, links, tips)
 
 
 def find_topo_files(search_dir: str = "") -> str:
@@ -83,130 +79,278 @@ def find_topo_files(search_dir: str = "") -> str:
     Returns:
         找到的 .topo 文件列表
     """
-    search_dirs = []
-    if search_dir:
-        search_dirs.append(search_dir)
-    else:
-        # 常见 eNSP 项目目录
-        home = os.path.expanduser("~")
-        search_dirs.extend([
-            os.path.join(home, "Desktop"),
-            os.path.join(home, "Documents"),
-            os.path.join(home, "Documents", "eNSP"),
-            r"C:\Program Files\Huawei\eNSP",
-            r"C:\eNSP",
-        ])
+    roots = [search_dir] if search_dir else _default_roots()
 
-    found = []
-    for d in search_dirs:
+    found, seen = [], set()
+    for d in roots:
         if not os.path.isdir(d):
             continue
-        for dirpath, _, filenames in os.walk(d):
-            for f in filenames:
-                if f.lower().endswith(".topo"):
-                    found.append(os.path.join(dirpath, f))
-            # 限制递归深度为 3 层
-            depth = dirpath[len(d):].count(os.sep)
-            if depth >= 3:
-                break
+        for path in _walk_topos(d):
+            key = os.path.normcase(os.path.abspath(path))
+            if key not in seen:
+                seen.add(key)
+                found.append(path)
 
     if not found:
         return "未找到 .topo 文件。请指定 search_dir 参数。"
 
     lines = [f"找到 {len(found)} 个 .topo 文件:"]
-    for f in found[:20]:
+    for f in found[:_MAX_LIST]:
         lines.append(f"  {f}")
-    if len(found) > 20:
-        lines.append(f"  ... 还有 {len(found) - 20} 个")
+    if len(found) > _MAX_LIST:
+        lines.append(f"  ... 还有 {len(found) - _MAX_LIST} 个")
     return "\n".join(lines)
 
 
-def _find_elements(root: ET.Element, paths: list[str]) -> list[ET.Element]:
-    """尝试多种路径查找元素"""
-    for path in paths:
-        elements = root.findall(path)
-        if elements:
-            return elements
-    # 也尝试递归查找
-    tag = paths[-1].split("/")[-1] if paths else "device"
-    return list(root.iter(tag))
+# --------------------------------------------------------------------- 解析层
 
 
-def _extract_device_info(elem: ET.Element) -> dict | None:
-    """从 XML 元素提取设备信息"""
-    name = (
-        elem.get("name")
-        or elem.findtext("name")
-        or elem.get("id")
-        or elem.findtext("id")
-    )
+def _loadable_xml(raw: bytes) -> str:
+    """把 .topo 字节流变成 ET.fromstring 能吃的东西"""
+    text = _decode_topo(raw)
+    # eNSP 的 encoding="UNICODE" 不是合法编码名，留着会让解析器去查一个不存在的
+    # codec。编码我们已经自己解完了，声明换掉即可（前端 topo-viewer.html 同样处理）。
+    return re.sub(r"<\?xml[^?]*\?>", '<?xml version="1.0"?>', text, count=1)
+
+
+def _decode_topo(raw: bytes) -> str:
+    """按 BOM / UTF-8 / GBK 顺序判定编码，永不抛异常"""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw[2:].decode("utf-16", errors="replace")
+    if raw[:3] == b"\xef\xbb\xbf":
+        return raw[3:].decode("utf-8", errors="replace")
+    # UTF-16 无 BOM：ASCII 内容会呈现为 \x00 交替
+    if len(raw) >= 4 and raw[1] == 0 and raw[3] == 0:
+        return raw.decode("utf-16-le", errors="replace")
+
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # eNSP 中文环境写出来的就是 GBK
+        try:
+            return raw.decode("gbk")
+        except UnicodeDecodeError:
+            return raw.decode("utf-8", errors="replace")
+
+
+def _one_line(text: str) -> str:
+    """标注里可以带换行（eNSP 存的是 &#x0D;&#x0A; 实体，XML 解析后是真换行），
+    直接回显会把报告的行结构冲散。压成一行。"""
+    return re.sub(r"\s*[\r\n]+\s*", " / ", text).strip()
+
+
+def _is_switch(model: str) -> bool:
+    """交换机接口从 0/0/1 起编号，路由器从 0/0/0 起 —— 与 topo-viewer.html 一致"""
+    m = (model or "").upper()
+    return bool(re.match(r"^(%s)\d" % "|".join(_DEV_PREFIX), m))
+
+
+def _extract_device_info(elem: ET.Element) -> Optional[dict]:
+    """从 <dev> 提取设备信息"""
+    name = elem.get("name") or elem.get("id")
     if not name:
         return None
 
-    dev_type = (
-        elem.get("type")
-        or elem.findtext("type")
-        or elem.get("deviceType")
-        or elem.findtext("deviceType")
-        or "unknown"
-    )
+    blocks = []
+    for slot in elem.findall("slot"):
+        for iface in slot.findall("interface"):
+            try:
+                count = int(iface.get("count") or 0)
+            except ValueError:
+                count = 0
+            blocks.append({
+                "type": iface.get("sztype") or "",
+                "name": iface.get("interfacename") or iface.get("sztype") or "if",
+                "count": count,
+            })
 
-    model = (
-        elem.get("model")
-        or elem.findtext("model")
-        or elem.get("deviceModel")
-        or elem.findtext("deviceModel")
-        or ""
-    )
+    model = elem.get("model") or ""
+    return {
+        "id": elem.get("id") or "",
+        "name": name,
+        "model": model,
+        "com_port": elem.get("com_port") or "",
+        "interfaces": _iface_names(model, blocks),
+    }
 
-    # 提取接口列表
-    interfaces = []
-    for iface_tag in ["interface", "port", "interfaces/interface", "ports/port"]:
-        for iface in elem.findall(iface_tag):
-            iname = iface.get("name") or iface.findtext("name") or iface.text
-            if iname:
-                interfaces.append(iname.strip())
-        if interfaces:
+
+def _iface_names(model: str, blocks: list[dict]) -> list[str]:
+    """把 slot/interface 的 count 展开成接口名。
+
+    序号按**类型**分别累计，跨块连续。不能每块从 base 重新数：AR2220 的块是
+    GE×1 + GE×2，那样会数出 GE0/0/0, GE0/0/0, GE0/0/1（重复且丢端口），
+    而 .topo 里 AR2220 的 srcIndex 实际用到 0,1,2 三个不同端口，
+    正确结果是 GE0/0/0, GE0/0/1, GE0/0/2。
+
+    srcIndex 是设备端口列表上的**全局**下标（.topo 里只有一个标量，没有类型信息），
+    所以按块顺序走；名字里的编号则按前缀各自计数，这样
+    AR1220 的 GE×2 + Ethernet×8 + Serial×2 会得到
+    GE0/0/0-1、Eth0/0/0-7、Serial0/0/0-1。
+
+    交换机从 0/0/1 起编号，其余从 0/0/0 起（与 topo-viewer.html 一致）。
+    """
+    base = 1 if _is_switch(model) else 0
+    counters: dict[str, int] = {}
+    names = []
+    for blk in blocks:
+        prefix = "Eth" if blk["name"] == "Ethernet" else blk["name"]
+        for _ in range(blk["count"]):
+            n = counters.get(prefix, base)
+            names.append(f"{prefix}0/0/{n}")
+            counters[prefix] = n + 1
+    return names
+
+
+def _extract_line_links(line: ET.Element, devices: list[dict]) -> list[dict]:
+    """一条 <line> 可以挂多个 <interfacePair>（多段链路），全部取出"""
+    by_id = {d["id"]: d for d in devices}
+    src, dst = by_id.get(line.get("srcDeviceID")), by_id.get(line.get("destDeviceID"))
+
+    links = []
+    for pair in line.findall("interfacePair"):
+        links.append({
+            "src_device": src["name"] if src else line.get("srcDeviceID", "?"),
+            "src_port": _port_at(src, pair.get("srcIndex")),
+            "dst_device": dst["name"] if dst else line.get("destDeviceID", "?"),
+            "dst_port": _port_at(dst, pair.get("tarIndex")),
+            "type": pair.get("lineName") or "Copper",
+        })
+    return links
+
+
+def _port_at(dev: Optional[dict], index) -> str:
+    """把 .topo 里的全局接口索引还原成接口名"""
+    if dev is None:
+        return f"if{index}"
+    try:
+        idx = int(index)
+    except (TypeError, ValueError):
+        return f"if{index}"
+    if 0 <= idx < len(dev["interfaces"]):
+        return dev["interfaces"][idx]
+    return f"if{idx}"
+
+
+# --------------------------------------------------------------------- 输出层
+
+
+def _disp_width(s: str) -> int:
+    """终端显示宽度（CJK 占两格），用于对齐含中文的设备名"""
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
+
+
+def _pad(s: str, width: int) -> str:
+    return s + " " * max(1, width - _disp_width(s))
+
+
+def _compress(names: list[str]) -> str:
+    """GE0/0/1..GE0/0/24 -> 'GE0/0/1-GE0/0/24 (24)'"""
+    if not names:
+        return "-"
+    if len(names) == 1:
+        return names[0]
+
+    parts = [re.match(r"^(.*?)(\d+)$", n) for n in names]
+    if all(parts) and len({p.group(1) for p in parts}) == 1:
+        nums = [int(p.group(2)) for p in parts]
+        if nums == list(range(nums[0], nums[0] + len(nums))):
+            prefix = parts[0].group(1)
+            return f"{prefix}{nums[0]}-{prefix}{nums[-1]} ({len(names)})"
+
+    if len(names) <= 8:
+        return ", ".join(names)
+    return ", ".join(names[:8]) + f", ... ({len(names)} 个)"
+
+
+def _format_report(file_path, root, devices, links, tips) -> str:
+    lines = [f"拓扑文件: {os.path.basename(file_path)}"]
+    version = root.get("version")
+    if version:
+        lines.append(f"拓扑版本: {version}")
+    lines.append(f"设备数量: {len(devices)}")
+    lines.append(f"链路数量: {len(links)}")
+    lines.append(f"文本标注数量: {len(tips)}")
+
+    if devices:
+        lines.append("\n=== 设备列表 ===")
+        head = ["名称", "型号", "控制台端口", "接口"]
+        lines.append("".join([_pad(h, 20 if i < 2 else 12) for i, h in enumerate(head)]))
+        lines.append("-" * 70)
+        for d in devices:
+            lines.append(
+                _pad(d["name"], 20)
+                + _pad(d["model"] or "-", 12)
+                + _pad(d["com_port"] or "-", 12)
+                + _compress(d["interfaces"])
+            )
+
+    if links:
+        lines.append("\n=== 链路连接 ===")
+        for l in links:
+            lines.append(
+                f"  {l['src_device']}:{l['src_port']}  ←→  "
+                f"{l['dst_device']}:{l['dst_port']}  ({l['type']})"
+            )
+
+    if tips:
+        lines.append("\n=== 文本标注 ===")
+        for t in tips:
+            lines.append(f"  {t}")
+
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------- 搜索层
+
+
+def _default_roots() -> list[str]:
+    """用户目录优先，其次从注册表里问出 eNSP 装在哪（本来就不该硬编码盘符）"""
+    home = os.path.expanduser("~")
+    roots = [
+        os.path.join(home, "Desktop"),
+        os.path.join(home, "Documents"),
+        os.path.join(home, "Documents", "eNSP"),
+        os.path.join(home, "Downloads"),
+    ]
+    roots.extend(_ensp_install_roots())
+    return roots
+
+
+def _ensp_install_roots() -> list[str]:
+    """.topo 的文件关联指向 eNSP_Client.exe，从注册表反推安装目录"""
+    roots = []
+    try:
+        import winreg
+    except ImportError:
+        return roots
+
+    for sub in (r"topofile\shell\open\command", r"topofile\DefaultIcon"):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, sub) as key:
+                value = str(winreg.QueryValueEx(key, "")[0])
+        except OSError:
+            continue
+        m = re.search(r'"([^"]+\.exe)"|^(\S+\.exe)', value, re.IGNORECASE)
+        if m:
+            exe = m.group(1) or m.group(2)
+            roots.append(os.path.dirname(exe))
             break
 
-    return {
-        "name": name,
-        "type": dev_type,
-        "model": model,
-        "interfaces": interfaces,
-    }
+    # 注册表查不到就退回常见安装位置（两个 Program Files 都试）
+    for drive in "CDEFG":
+        roots.append(rf"{drive}:\Program Files\Huawei\eNSP")
+    return roots
 
 
-def _extract_link_info(elem: ET.Element) -> dict | None:
-    """从 XML 元素提取链路信息"""
-    # 尝试多种属性/子元素格式
-    src_device = (
-        elem.get("srcDevice") or elem.get("src_device")
-        or elem.findtext("srcDevice") or elem.findtext("source/device")
-        or ""
-    )
-    src_port = (
-        elem.get("srcPort") or elem.get("src_port")
-        or elem.findtext("srcPort") or elem.findtext("source/port")
-        or ""
-    )
-    dst_device = (
-        elem.get("dstDevice") or elem.get("dst_device")
-        or elem.findtext("dstDevice") or elem.findtext("destination/device")
-        or ""
-    )
-    dst_port = (
-        elem.get("dstPort") or elem.get("dst_port")
-        or elem.findtext("dstPort") or elem.findtext("destination/port")
-        or ""
-    )
+def _walk_topos(root: str):
+    """在 root 下搜集 .topo。
 
-    if not (src_device and dst_device):
-        return None
-
-    return {
-        "src_device": src_device,
-        "src_port": src_port,
-        "dst_device": dst_device,
-        "dst_port": dst_port,
-    }
+    深度限制必须用「剪枝」而不是 break —— break 终止的是整个 os.walk，
+    只要第一个分支里有深目录，后面的兄弟目录就全丢（之前只找到 1/3 就是这个原因）。
+    """
+    for dirpath, dirnames, filenames in os.walk(root):
+        depth = dirpath[len(root):].count(os.sep)
+        dirnames[:] = [d for d in dirnames if depth + 1 <= _MAX_DEPTH]
+        for f in filenames:
+            if f.lower().endswith(".topo"):
+                yield os.path.join(dirpath, f)
