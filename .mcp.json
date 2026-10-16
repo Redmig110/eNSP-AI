@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ensp-ai": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "ensp_mcp_server.server"]
+    }
+  }
+}

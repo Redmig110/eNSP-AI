@@ -26,21 +26,11 @@ pip install -r requirements.txt
 
 ### Claude Code
 
-```bash
-claude mcp add ensp-ai -- python -m ensp_mcp_server.server --cwd /path/to/eNSP-AI
-```
+仓库根目录已经带了 `.mcp.json`，**clone 后直接在项目里打开 Claude Code 即可**。首次会提示是否信任该 MCP server，确认后就能用。
 
-或手动编辑 `~/.claude.json`，在 `mcpServers` 中添加：
+`.mcp.json` 里刻意没有 `cwd` 字段 —— 项目级配置的工作目录自动取项目目录。这点必须对：服务是以 `python -m ensp_mcp_server.server` 启动的，`-m` 从工作目录解析包，工作目录不对会直接报 `ModuleNotFoundError: No module named 'ensp_mcp_server'`。
 
-```json
-{
-  "ensp-ai": {
-    "command": "python",
-    "args": ["-m", "ensp_mcp_server.server"],
-    "cwd": "A:\\eNSP-AI"
-  }
-}
-```
+> **不要用 `claude mcp add ... --cwd <路径>`。** `claude mcp add` 没有指定工作目录的选项，而 `server.py` 的 `main()` 不解析 argv —— `--cwd` 会被当成参数传给服务端然后静默丢弃，工作目录根本没生效。
 
 ### Claude Desktop
 
@@ -52,7 +42,7 @@ claude mcp add ensp-ai -- python -m ensp_mcp_server.server --cwd /path/to/eNSP-A
     "ensp-ai": {
       "command": "python",
       "args": ["-m", "ensp_mcp_server.server"],
-      "cwd": "A:\\eNSP-AI"
+      "cwd": "C:/path/to/eNSP-AI"
     }
   }
 }
@@ -62,7 +52,7 @@ claude mcp add ensp-ai -- python -m ensp_mcp_server.server --cwd /path/to/eNSP-A
 
 在 Settings > MCP Servers 中添加，配置同上。
 
-> **注意：** `cwd` 路径改成你实际的项目目录。
+> **注意：** Claude Desktop / Cursor 不读取项目级 `.mcp.json`，所以这里**必须显式写 `cwd`** 并改成你实际的项目目录 —— 且它必须是**仓库根目录**，否则包导入会失败。
 
 ## 使用方式
 
@@ -176,16 +166,19 @@ python topo-server.py
 ```
 eNSP-AI/
 ├── requirements.txt          # Python 依赖
+├── .mcp.json                 # Claude Code 项目级 MCP 配置
+├── CLAUDE.md                 # 给 AI agent 的项目说明
 ├── topo-viewer.html          # 拓扑可视化（浏览器）
 ├── topo-server.py            # 可视化本地服务器
 └── ensp_mcp_server/          # MCP Server 主包
     ├── __init__.py
     ├── server.py              # MCP Server 入口 & 工具注册
     ├── config.py              # 配置 & 设备注册表
-    ├── console.py             # Telnet 控制台连接
+    ├── console.py             # 设备控制台连接（原生 socket）
     ├── exceptions.py          # 自定义异常
     └── tools/
-        └── cli.py             # CLI 执行 & 配置工具
+        ├── cli.py             # CLI 执行 & 配置工具
+        └── topology.py        # .topo 解析 & 搜索
 ```
 
 ## 环境变量（可选）
