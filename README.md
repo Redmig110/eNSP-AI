@@ -161,6 +161,36 @@ python topo-server.py
 | `discover_topology` | 解析 eNSP .topo 文件 |
 | `find_topo_files` | 搜索本地 .topo 文件 |
 
+### eNSP 应用与拓扑生命周期
+| 工具 | 说明 |
+|------|------|
+| `open_ensp` | 启动 eNSP 界面（已在运行则不重复启动） |
+| `close_ensp` | 优雅关闭 eNSP（发 WM_CLOSE，不 taskkill） |
+| `open_topology` | 打开指定 .topo 文件 |
+| `close_topology` | 关闭当前拓扑页签，eNSP 保持运行 |
+
+这四个工具用 stdlib `ctypes` 直接调 Win32，**不依赖 pywin32**。exe 路径按
+`ENSP_EXE` 环境变量 → 注册表 `HKCR\topofile\shell\open\command` → 常见安装目录的顺序查找。
+
+#### 实测出来的三个限制（用之前先读，别踩）
+
+1. **`open_topology` 只在 eNSP 没运行时可靠。** eNSP 已在运行时，命令行把 `.topo`
+   转交给它的这条路基本走不通：已有非空拓扑时**完全无效**，一个画布都没有时**超时无效**，
+   只有"运行中 + 空白板"成功过一次（未复现）。此时工具会**如实报失败**并给出替代做法
+   （GUI 里 Ctrl+O，或先 `close_ensp` 再打开）。
+   > 成功判据是**交接前后画布状态有没有变化**，不是"画布上有没有设备标签"。
+   > 后者在 eNSP 已开着别的拓扑时恒为真，会把「根本没打开」静默误报成成功。
+2. **`close_ensp` 只在没有打开拓扑时才干脆**（1~5 秒退出）。只要 eNSP 里开着拓扑，
+   关闭就会弹模态确认框把 `WM_CLOSE` 挡住，工具会报「未退出」并**指出那个对话框的窗口句柄**。
+   工具**不替你点按钮、不 taskkill**（这是有意的设计选择）。
+3. **残留进程是 eNSP 自身行为**：关掉拓扑或关掉 eNSP 之后，`eNSP_Switch.exe` /
+   `VBoxHeadless.exe` 可能残留且控制台端口消失（"进程还在但 MCP 连不上"的僵尸态）；
+   `open_topology` 失败时还可能残留一个没有窗口的启动器进程。
+   工具**只报告、不清理**。
+
+另外：载入 `.topo` 只是画出拓扑，**设备不会自动启动**，需要在 GUI 里点「启动设备」
+（Ctrl+Alt+A）；eNSP 的 Ctrl+S 保存的是拓扑，**不是**设备配置。
+
 ### 巡检与验收
 | 工具 | 说明 |
 |------|------|
@@ -207,6 +237,7 @@ eNSP-AI/
     ├── exceptions.py          # 自定义异常
     └── tools/
         ├── cli.py             # CLI 执行 & 配置工具
+        ├── ensp_app.py        # eNSP 应用与拓扑生命周期（Win32 ctypes）
         ├── inspection.py      # 巡检 & 实验验收
         └── topology.py        # .topo 解析 & 搜索
 ```
@@ -218,6 +249,7 @@ eNSP-AI/
 | `ENSP_USERNAME` | 全局设备用户名 | 空 |
 | `ENSP_PASSWORD` | 全局设备密码 | 空 |
 | `ENSP_LOG_LEVEL` | 日志级别 | WARNING |
+| `ENSP_EXE` | eNSP_Client.exe 完整路径，覆盖自动探测 | 自动探测 |
 
 ## License
 

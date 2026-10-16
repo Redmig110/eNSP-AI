@@ -1,7 +1,7 @@
 """
 eNSP MCP Server 入口
 
-精简版：17 个工具，使用 HuaweiConsole 直连 eNSP 控制台。
+精简版：21 个工具，使用 HuaweiConsole 直连 eNSP 控制台。
 """
 import asyncio
 import logging
@@ -18,12 +18,13 @@ from .tools.cli import (
 )
 from .tools.topology import discover_topology, find_topo_files
 from .tools.inspection import verify_expectations, inspect_topology
+from .tools.ensp_app import open_ensp, close_ensp, open_topology, close_topology
 
 logger = logging.getLogger("ensp_mcp.server")
 
 server = Server(config.server_name)
 
-# ==================== 工具定义（17 个） ====================
+# ==================== 工具定义（21 个） ====================
 
 TOOLS = [
     # --- 设备注册 ---
@@ -221,6 +222,60 @@ TOOLS = [
         },
     ),
 
+    # --- eNSP 应用 / 拓扑生命周期 ---
+    Tool(
+        name="open_ensp",
+        description=(
+            "启动 eNSP 图形界面。\n"
+            "eNSP 是单实例的：已在运行时不重复启动，只回报现有 PID 与窗口状态。\n"
+            "裸启动得到的是一个空白 topoboard，设备不会自动运行。\n"
+            "exe 路径按 ENSP_EXE 环境变量 → 注册表文件关联 → 常见安装目录的顺序查找。"
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="close_ensp",
+        description=(
+            "优雅关闭 eNSP(给主窗口发 WM_CLOSE，等同点右上角 X)，不做 taskkill。\n"
+            "实测:eNSP 里没有任何打开的拓扑时干净退出(1~5 秒);只要开着拓扑，"
+            "关闭就会弹模态确认框挡住，本工具会报「未退出」并指出那个对话框的窗口句柄。"
+            "本工具不替你点按钮，也不会强制结束进程。\n"
+            "注意:eNSP 关闭后可能残留 eNSP_Switch / VBoxHeadless 进程(僵尸态，"
+            "控制台端口已失效)，本工具只报告、不清理。"
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="open_topology",
+        description=(
+            "在 eNSP 中打开一个 .topo 拓扑文件。\n"
+            "eNSP 没在运行时会一并启动它 —— 这条路径可靠。\n"
+            "但 eNSP 已在运行时，命令行把 .topo 转交给它的这条路基本走不通"
+            "(实测:已有非空拓扑时完全无效;一个画布都没有时超时无效)。"
+            "此时本工具会如实报失败，并提示改用 GUI 的 Ctrl+O，或先 close_ensp 再打开。\n"
+            "成功判据是交接前后画布状态发生变化，不是「画布上有设备标签」——"
+            "后者在 eNSP 已开着别的拓扑时恒为真，会把未打开误报成成功。\n"
+            "载入 .topo 只是画出拓扑，设备不会自动启动，需要在 GUI 里点「启动设备」。"
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": ".topo 文件的完整路径"},
+            },
+            "required": ["file_path"],
+        },
+    ),
+    Tool(
+        name="close_topology",
+        description=(
+            "关闭 eNSP 里当前的拓扑页签，eNSP 本身保持运行。\n"
+            "eNSP 没有「关闭指定拓扑」的接口，本工具关的是面积最大的那个可见画布；"
+            "同时开了多个拓扑时会如实提示。\n"
+            "注意:关闭拓扑不会停止设备，设备进程可能残留且控制台端口失效。"
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+
     # --- 拓扑 ---
     Tool(
         name="discover_topology",
@@ -337,6 +392,10 @@ TOOL_DISPATCH = {
     "multi_health_check": lambda a: multi_health_check(a.get("device_names")),
     "discover_topology": lambda a: discover_topology(a["file_path"]),
     "find_topo_files": lambda a: find_topo_files(a.get("search_dir", "")),
+    "open_ensp": lambda a: open_ensp(),
+    "close_ensp": lambda a: close_ensp(),
+    "open_topology": lambda a: open_topology(a["file_path"]),
+    "close_topology": lambda a: close_topology(),
     "verify_expectations": lambda a: verify_expectations(a.get("checks"), a.get("checklist_file")),
     "inspect_topology": lambda a: inspect_topology(a.get("device_names")),
 }
