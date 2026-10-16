@@ -16,9 +16,13 @@ logger = logging.getLogger("ensp_mcp.cli")
 
 # 设备拒绝命令时的典型回显。Fit AP 这类精简 CLI 不认 display clock，
 # 但它的报错同样带着提示符返回，光看「有没有异常」会误判成健康。
+#
+# 末尾那个 `^` 必须限定为「单独占一行」：VRP 报错时会把 ^ 放在出错那一列下面
+# 单独成行来指出位置。早先写的是 `^\s*\^`（行首有 ^ 就算报错），结果
+# `display ip interface brief` 的图例行 `^down: standby` 被误判成命令被拒。
 _CLI_REJECT_RE = re.compile(
     r"Error:|Unrecognized command|Wrong parameter|Incomplete command|"
-    r"Ambiguous command|Too many parameters|Invalid input|^\s*\^",
+    r"Ambiguous command|Too many parameters|Invalid input|^\s*\^\s*$",
     re.MULTILINE,
 )
 
