@@ -462,6 +462,127 @@ check("config.py 里没有 _device_registry 的重新绑定语句",
 
 
 # ====================================================================
+# 9. 视图保持 —— push_config 结束后停在 system-view，不再 return
+# ====================================================================
+section("9. 视图保持（假交换机）")
+
+from ensp_mcp_server.console import _prompt_view, _HOSTNAME_CACHE
+
+
+eq("用户视图提示符", _prompt_view("<R1>", None), "user")
+eq("系统视图提示符", _prompt_view("[R1]", None), "system")
+eq("子视图提示符（无基线）", _prompt_view("[R1-GigabitEthernet0/0/1]", None), "sub")
+eq("子视图提示符（有基线）", _prompt_view("[R1-acl-adv-3000]", "R1"), "sub")
+eq("主机名带 '-' 且有基线 → 仍是系统视图", _prompt_view("[R-1]", "R-1"), "system")
+eq("主机名带 '-' 且无基线 → 保守当子视图", _prompt_view("[R-1]", None), "sub")
+eq("设备启动中的 '##' 认不出", _prompt_view("##", None), "unknown")
+
+
+class FakeSwitch(threading.Thread):
+    """记住当前视图的假交换机；记录收到的每一条命令。"""
+
+    def __init__(self, view="user", hostname="R1"):
+        super().__init__(daemon=True)
+        self.hostname = hostname
+        self.view = view            # user / system / sub
+        self.sub = "GigabitEthernet0/0/1"
+        self.commands = []
+        self.sock = socket.socket()
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(5)
+        self.port = self.sock.getsockname()[1]
+
+    def prompt(self):
+        if self.view == "user":
+            return f"<{self.hostname}>"
+        if self.view == "system":
+            return f"[{self.hostname}]"
+        return f"[{self.hostname}-{self.sub}]"
+
+    def run(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                break
+            try:
+                self._serve(conn)
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+    def _serve(self, conn):
+        conn.sendall((self.prompt() + "\r\n").encode())
+        buf = b""
+        while True:
+            data = conn.recv(4096)
+            if not data:
+                break
+            buf += data
+            while b"\r\n" in buf:
+                raw, buf = buf.split(b"\r\n", 1)
+                line = raw.decode().strip()
+                self.commands.append(line)
+                if line == "system-view":
+                    self.view = "system"
+                elif line == "return":
+                    self.view = "user"
+                elif line.startswith("interface "):
+                    self.view, self.sub = "sub", line.split(None, 1)[1]
+                conn.sendall((line + "\r\n" + self.prompt() + "\r\n").encode())
+
+
+def drive(fake, cmds):
+    """新开一次控制台连接（模拟一次工具调用）下发命令"""
+    before = len(fake.commands)
+    with HuaweiConsole("127.0.0.1", fake.port, timeout=5) as c:
+        c.send_config_set(cmds)
+    return fake.commands[before:]
+
+
+# A. 用户视图起步：进系统视图，但不许再 return
+_HK = _HOSTNAME_CACHE
+for k in list(_HK):
+    del _HK[k]
+sw = FakeSwitch(view="user")
+sw.start()
+time.sleep(0.2)
+
+got = drive(sw, ["vlan 10"])
+print(f"  第一次下发收到: {got}")
+check("首次下发进入 system-view", "system-view" in got)
+check("结束时不再下发 return", "return" not in got, f"实际: {got}")
+eq("设备最终停在系统视图", sw.view, "system")
+
+# B. 紧接着再下发一次：应当零视图切换
+got2 = drive(sw, ["vlan 20"])
+print(f"  第二次下发收到: {got2}")
+check("第二次下发不再发 system-view", "system-view" not in got2, f"实际: {got2}")
+check("第二次下发也没有 return", "return" not in got2, f"实际: {got2}")
+eq("设备仍在系统视图", sw.view, "system")
+
+# C. 停在了子视图：必须先 return 再重新进系统视图
+for k in list(_HK):
+    del _HK[k]
+sw2 = FakeSwitch(view="sub")
+sw2.start()
+time.sleep(0.2)
+
+got3 = drive(sw2, ["port default vlan 10"])
+print(f"  子视图起步收到: {got3}")
+check("子视图起步先 return",
+      "return" in got3 and got3.index("return") < got3.index("system-view"),
+      f"实际: {got3}")
+check("子视图起步重新进 system-view", "system-view" in got3, f"实际: {got3}")
+eq("配置命令执行后设备停在系统视图", sw2.view, "system")
+
+sw.sock.close()
+sw2.sock.close()
+
+
+# ====================================================================
 shutil.rmtree(TMP_DIR, ignore_errors=True)
 print("\n" + "=" * 60)
 failed = [(n, d) for n, ok, d in RESULTS if not ok]

@@ -9,7 +9,12 @@ import re
 import socket
 from typing import Optional
 
-from ..config import _resolve_device, _device_registry, _get_device_port
+from ..config import (
+    _resolve_device,
+    _device_registry,
+    _get_device_port,
+    _get_device_credentials,
+)
 from ..console import HuaweiConsole
 
 logger = logging.getLogger("ensp_mcp.cli")
@@ -41,7 +46,13 @@ _HEALTH_PROBES = ("display version", "display clock")
 def _connect(device_ip: str, timeout: int = 15) -> HuaweiConsole:
     """根据设备名/IP 创建 HuaweiConsole 实例"""
     host, port = _resolve_device(device_ip)
-    return HuaweiConsole(host, port, timeout=timeout)
+    creds = ("", "")
+    for name, entry in _device_registry.items():
+        if name == device_ip or name.lower() == device_ip.lower():
+            creds = _get_device_credentials(entry)
+            break
+    return HuaweiConsole(host, port, timeout=timeout,
+                         username=creds[0], password=creds[1])
 
 
 # ==================== 核心工具 ====================

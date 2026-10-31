@@ -84,6 +84,13 @@ def _get_device_port(entry: int | dict) -> int:
     return entry
 
 
+def _get_device_credentials(entry: int | dict) -> tuple[str, str]:
+    """取设备用户名/密码。交换机免登录，返回空串即可；USG6000V 必须给。"""
+    if isinstance(entry, dict):
+        return entry.get("username", ""), entry.get("password", "")
+    return "", ""
+
+
 def register_device(name: str, port: int, username: str = "", password: str = "") -> str:
     if username or password:
         entry: int | dict = {"port": port}
