@@ -109,6 +109,15 @@ def save_config(device_ip: str) -> str:
                     time.sleep(3)
                     output += c._read_available()
 
+            # 部分 S5700 / S3700 在确认后还会追一句“输入文件名”，
+            # 不回车的话就停在那里等，配置其实没写进去 —— 回显里只有 Y 的日志行，
+            # 看起来像成功，`display saved-configuration` 却是空的。
+            if "input the file name" in output or "*.cfg, *.zip" in output:
+                c._send_line("")          # 直接回车采用默认的 vrpcfg.zip
+                import time
+                time.sleep(3)
+                output += c._read_available()
+
             return f"[{device_ip}] 配置保存结果:\n{output}"
     except Exception as e:
         return f"保存配置失败 [{device_ip}]: {e}"
