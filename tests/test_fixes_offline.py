@@ -8,14 +8,14 @@ cli / config / console 的离线测试 —— 不需要 eNSP 设备。
 只用标准库，不依赖 pytest。退出码 0 = 全通过，1 = 有失败。
 
 覆盖本次修复：
-  6. _cli_rejected           —— `^down: standby` 图例误判
-  7. 分页回显                —— 假设备回放 >1 屏输出
-  8. 注册表身份              —— auto_discover 之后不能拿到旧 dict
-  9. 视图保持                —— 下发后停在 system-view
- 10. auto_discover 合并      —— 登录设备保留原名与凭据
- 11. 提示符严格匹配          —— `[Y/N]` 不能当 VRP 提示符
- 12. health_check            —— 必须走 _connect（带设备凭据）
- 13. 控制台登录流程          —— Username/Password 交互
+  1. _cli_rejected           —— `^down: standby` 图例误判
+  2. 分页回显                —— 假设备回放 >1 屏输出
+  3. 注册表身份              —— auto_discover 之后不能拿到旧 dict
+  4. 视图保持                —— 下发后停在 system-view
+  5. auto_discover 合并      —— 登录设备保留原名与凭据
+  6. 提示符严格匹配          —— `[Y/N]` 不能当 VRP 提示符
+  7. health_check            —— 必须走 _connect（带设备凭据）
+  8. 控制台登录流程          —— Username/Password 交互
 """
 import json
 import os
@@ -56,9 +56,9 @@ def section(t):
 
 
 # ====================================================================
-# 6. _cli_rejected —— `^down: standby` 图例误判
+# 1. _cli_rejected —— `^down: standby` 图例误判
 # ====================================================================
-section("6. _cli_rejected 图例误判")
+section("1. _cli_rejected 图例误判")
 
 legend_out = """Interface                         IP Address      Physical     Protocol
 Vlanif100                         66.0.0.1        up           up
@@ -86,9 +86,9 @@ check("完全正常的输出不算被拒",
 
 
 # ====================================================================
-# 7. 分页回显 —— 假设备回放 >1 屏的输出
+# 2. 分页回显 —— 假设备回放 >1 屏的输出
 # ====================================================================
-section("7. 分页回显（假设备回放）")
+section("2. 分页回显（假设备回放）")
 
 
 class FakeDevice(threading.Thread):
@@ -209,9 +209,9 @@ check("对照实验证明这组测试能抓到修复前的 bug", len(old_glued) 
 
 
 # ====================================================================
-# 8. 注册表身份 —— auto_discover 之后不能拿到旧 dict
+# 3. 注册表身份 —— auto_discover 之后不能拿到旧 dict
 # ====================================================================
-section("8. 注册表身份（auto_discover 之后的失效回归）")
+section("3. 注册表身份（auto_discover 之后的失效回归）")
 
 check("导入时 cli / config 指向同一个 dict",
       cfg._device_registry is C._device_registry)
@@ -237,9 +237,9 @@ check("config.py 里没有 _device_registry 的重新绑定语句",
 
 
 # ====================================================================
-# 9. 视图保持 —— push_config 结束后停在 system-view，不再 return
+# 4. 视图保持 —— push_config 结束后停在 system-view，不再 return
 # ====================================================================
-section("9. 视图保持（假交换机）")
+section("4. 视图保持（假交换机）")
 
 from ensp_mcp_server.console import _prompt_view, _HOSTNAME_CACHE
 
@@ -358,9 +358,9 @@ sw2.sock.close()
 
 
 # ====================================================================
-# 10. auto_discover 保留凭据
+# 5. auto_discover 保留凭据
 # ====================================================================
-section("10. auto_discover 保留凭据与原名")
+section("5. auto_discover 保留凭据与原名")
 
 
 class _FakeCompleted:
@@ -400,9 +400,9 @@ finally:
 
 
 # ====================================================================
-# 11. 提示符严格匹配（[Y/N] 不能当命令结束）
+# 6. 提示符严格匹配（[Y/N] 不能当命令结束）
 # ====================================================================
-section("11. 提示符严格匹配")
+section("6. 提示符严格匹配")
 
 check("[Y/N] 交互提示不算 VRP 提示符",
       not console_mod._VRP_PROMPT_RE.search(
@@ -421,9 +421,9 @@ check("console.py 没有重复前缀 _VRP_VRP_PROMPT_RE",
 
 
 # ====================================================================
-# 12. health_check 走统一连接（带凭据）
+# 7. health_check 走统一连接（带凭据）
 # ====================================================================
-section("12. health_check 走统一连接")
+section("7. health_check 走统一连接")
 
 
 class _FakeConsoleCtx:
@@ -456,9 +456,9 @@ check("健康检查通过统一连接（带凭据）", "CLI 命令测试: OK" in
 
 
 # ====================================================================
-# 13. 控制台登录流程
+# 8. 控制台登录流程
 # ====================================================================
-section("13. 控制台登录流程")
+section("8. 控制台登录流程")
 
 
 class _FakeSockSend:
