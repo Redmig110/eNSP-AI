@@ -202,7 +202,7 @@ def health_check(device_ip: str) -> str:
 
     # 2. 命令测试：依次尝试探测命令，取第一条设备真正接受的
     try:
-        with HuaweiConsole(host, port, timeout=10) as c:
+        with _connect(device_ip, timeout=10) as c:
             last_err = ""
             for probe in _HEALTH_PROBES:
                 output = c.send_command(probe, timeout=10)

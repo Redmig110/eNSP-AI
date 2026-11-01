@@ -16,6 +16,11 @@ inspection / cli / console 的离线测试 —— 不需要 eNSP 设备。
   6. _cli_rejected           —— `^down: standby` 图例误判那个修复
   7. 分页回显                —— 假设备回放 >1 屏输出，验两个修复判据
   8. 注册表身份              —— auto_discover 之后各模块不能拿到旧 dict
+  9. 视图保持                —— 假交换机验证下发后停在 system-view
+ 10. auto_discover 合并      —— 登录设备读不到 sysname 时保留原名与凭据
+ 11. 提示符严格匹配          —— `[Y/N]` 不能当 VRP 提示符
+ 12. health_check            —— 必须走 _connect（带设备凭据）
+ 13. 控制台登录流程          —— Username/Password 交互与提示符收敛
 
 第 7 节的假设备是本文件的核心：`---- More ----` 那个 bug 只在超过一屏的
 回显上才出现，没有设备就只能在字节层面回放。末尾有一组对照，用**修复前**的
@@ -30,6 +35,7 @@ import sys
 import tempfile
 import threading
 import time
+from unittest import mock
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
@@ -39,6 +45,7 @@ from ensp_mcp_server.tools import cli as C
 from ensp_mcp_server.tools.cli import _cli_rejected
 from ensp_mcp_server.console import HuaweiConsole
 import ensp_mcp_server.config as cfg
+import ensp_mcp_server.console as console_mod
 
 TMP_DIR = tempfile.mkdtemp(prefix="ensp_offline_test_")
 RESULTS = []
@@ -580,6 +587,129 @@ eq("配置命令执行后设备停在系统视图", sw2.view, "system")
 
 sw.sock.close()
 sw2.sock.close()
+
+
+# ====================================================================
+# 10. auto_discover 保留凭据
+# ====================================================================
+section("10. auto_discover 保留凭据与原名")
+
+
+class _FakeCompleted:
+    def __init__(self, stdout):
+        self.stdout = stdout
+
+
+def _fake_run(args, **kwargs):
+    if args and args[0] == "tasklist":
+        return _FakeCompleted(
+            "eNSP_Client.exe          4321 Console                    1      1,234 K\n")
+    if args and args[0] == "netstat":
+        return _FakeCompleted(
+            "  TCP    0.0.0.0:2000    0.0.0.0:0    LISTENING    4321\n"
+            "  TCP    0.0.0.0:2001    0.0.0.0:0    LISTENING    4321\n")
+    return _FakeCompleted("")
+
+
+saved_reg = dict(cfg._device_registry)
+try:
+    cfg._replace_registry(
+        {"FW": {"port": 2000, "username": "admin", "password": "p"}})
+    with mock.patch.object(cfg.subprocess, "run", side_effect=_fake_run), \
+         mock.patch.object(cfg, "_get_sysname_from_port",
+                           side_effect=lambda p: None if p == 2000 else "R1"), \
+         mock.patch.object(cfg, "_save_registry", lambda: None):
+        out = cfg.auto_discover_devices()
+
+    fw = cfg._device_registry.get("FW")
+    check("读不到 sysname 的登录设备保留原名", isinstance(fw, dict), repr(fw))
+    eq("用户名没有丢", fw.get("username") if isinstance(fw, dict) else None, "admin")
+    eq("端口仍是 2000", cfg._get_device_port(fw) if fw else None, 2000)
+    eq("能读到 sysname 的设备正常注册", cfg._device_registry.get("R1"), 2001)
+    check("报告里能看到保留的 FW", "FW" in out, out)
+finally:
+    cfg._replace_registry(saved_reg)
+
+
+# ====================================================================
+# 11. 提示符严格匹配（[Y/N] 不能当命令结束）
+# ====================================================================
+section("11. 提示符严格匹配")
+
+check("[Y/N] 交互提示不算 VRP 提示符",
+      not console_mod._VRP_PROMPT_RE.search(
+          b"Are you sure to continue? [Y/N]\r\n"))
+check("<R1> 算 VRP 提示符",
+      bool(console_mod._VRP_PROMPT_RE.search(b"<R1>\r\n")))
+check("[R1-GigabitEthernet0/0/1] 算 VRP 提示符",
+      bool(console_mod._VRP_PROMPT_RE.search(b"[R1-GigabitEthernet0/0/1]\r\n")))
+
+console_src = open(os.path.join(REPO, "ensp_mcp_server/console.py"),
+                   encoding="utf-8").read()
+check("console.py 不再保留宽松的 _PROMPT_RE",
+      "_PROMPT_RE" not in console_src.replace("_VRP_PROMPT_RE", ""))
+check("console.py 没有重复前缀 _VRP_VRP_PROMPT_RE",
+      "_VRP_VRP_PROMPT_RE" not in console_src)
+
+
+# ====================================================================
+# 12. health_check 走统一连接（带凭据）
+# ====================================================================
+section("12. health_check 走统一连接")
+
+
+class _FakeConsoleCtx:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def send_command(self, probe, timeout=10):
+        return "Huawei Versatile Routing Platform Software"
+
+
+class _FakeSock:
+    def settimeout(self, t):
+        pass
+
+    def connect(self, addr):
+        pass
+
+    def close(self):
+        pass
+
+
+with mock.patch.object(C, "_connect", return_value=_FakeConsoleCtx()) as m_conn, \
+     mock.patch.object(C.socket, "socket", return_value=_FakeSock()):
+    out = C.health_check("FW")
+m_conn.assert_called_once_with("FW", timeout=10)
+check("健康检查通过统一连接（带凭据）", "CLI 命令测试: OK" in out, out)
+
+
+# ====================================================================
+# 13. 控制台登录流程
+# ====================================================================
+section("13. 控制台登录流程")
+
+
+class _FakeSockSend:
+    def __init__(self):
+        self.sent = []
+
+    def sendall(self, data):
+        self.sent.append(data)
+
+
+c = HuaweiConsole("127.0.0.1", 2000, username="admin", password="p", timeout=5)
+c._sock = _FakeSockSend()
+login_sends = []
+c._send_line = lambda text: login_sends.append(text)
+login_reads = iter(["Username:", "Password:", "<R1>"])
+c._read_until_any = lambda patterns, timeout=15: next(login_reads)
+c._login()
+eq("登录时先发用户名再发密码", login_sends, ["admin", "p"])
+check("登录流程能走到 VRP 提示符", True)
 
 
 # ====================================================================

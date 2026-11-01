@@ -200,25 +200,56 @@ def auto_discover_devices() -> str:
 
     ports.sort()
 
+    # 现有条目按端口 / 名字建索引，用来保留手动注册的凭据和名字。
+    # 关键：USG6000V 这类设备读不到 sysname（控制台先要登录），必须靠端口
+    # 认回来；否则它会被重命名成 DeviceN，并且被裸端口覆盖掉 username/password。
+    existing_by_port = {}
+    existing_by_name = {}
+    for name, entry in _device_registry.items():
+        existing_by_port.setdefault(_get_device_port(entry), (name, entry))
+        existing_by_name[name] = entry
+
     # 3. 连接获取 sysname
     discovered = {}
     default_count = 0
     for port in ports:
         sysname = _get_sysname_from_port(port)
+        existing = existing_by_port.get(port)
+
         if sysname and sysname != "Huawei":
-            discovered[sysname] = port
+            name = sysname
+            # 端口对得上优先用端口的旧条目；其次按 sysname 找同名旧条目。
+            old = existing[1] if existing else existing_by_name.get(name)
+        elif existing:
+            # 读不到 sysname（需要登录的设备）：保留原名字和凭据。
+            name = existing[0]
+            old = existing[1]
         else:
             default_count += 1
-            discovered[f"Device{default_count}"] = port
+            name = f"Device{default_count}"
+            old = None
 
-    # 4. 合并注册表（保留手动注册的设备）
-    discovered_ports = set(discovered.values())
+        # 两台设备同名时加后缀，避免后发现的覆盖先前发现的。
+        unique = name
+        seq = 2
+        while unique in discovered:
+            unique = f"{name}-{seq}"
+            seq += 1
+
+        if isinstance(old, dict):
+            entry = dict(old)
+            entry["port"] = port
+            discovered[unique] = entry
+        else:
+            discovered[unique] = port
+
+    # 4. 合并注册表（保留没被本次发现覆盖的手动注册设备）
+    discovered_ports = {_get_device_port(e) for e in discovered.values()}
     merged = {}
     for name, entry in _device_registry.items():
         if _get_device_port(entry) not in discovered_ports:
             merged[name] = entry
-    for name, port in discovered.items():
-        merged[name] = port
+    merged.update(discovered)
 
     # 原地更新，不重新绑定 —— 见 _device_registry 定义处的注释
     _replace_registry(merged)
@@ -228,8 +259,8 @@ def auto_discover_devices() -> str:
     lines = [f"自动发现完成！共找到 {len(discovered)} 台设备:"]
     lines.append(f"{'设备名':<12} {'端口':<8}")
     lines.append("-" * 20)
-    for name, port in discovered.items():
-        lines.append(f"{name:<12} {port:<8}")
+    for name, entry in discovered.items():
+        lines.append(f"{name:<12} {_get_device_port(entry):<8}")
 
     manual_kept = {k: v for k, v in merged.items() if k not in discovered}
     if manual_kept:

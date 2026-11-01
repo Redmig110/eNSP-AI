@@ -11,9 +11,6 @@ import time
 
 logger = logging.getLogger("ensp_mcp.console")
 
-# 华为提示符: <Huawei> 或 [Huawei] 或 <R1> 或 [R1-GigabitEthernet0/0/0] 等
-_PROMPT_RE = re.compile(rb'[<\[]\S+[>\]]\s*$')
-
 # ---- More ---- 分页提示
 _MORE_RE = re.compile(rb'----\s*More\s*----')
 
@@ -236,7 +233,7 @@ class HuaweiConsole:
         if lines and command.strip() in lines[0]:
             lines = lines[1:]
         # 去掉末尾的提示符行
-        if lines and _PROMPT_RE.search(lines[-1].encode('utf-8', errors='ignore')):
+        if lines and _VRP_PROMPT_RE.search(lines[-1].encode('utf-8', errors='ignore')):
             lines = lines[:-1]
         return '\n'.join(lines)
 
@@ -330,7 +327,7 @@ class HuaweiConsole:
 
                 # 检测提示符后等待一小段时间，确认没有更多数据
                 # 这解决了 AR 路由器命令回显中包含提示符的问题
-                if _PROMPT_RE.search(buf):
+                if _VRP_PROMPT_RE.search(buf):
                     # 等待 0.3 秒看是否有更多数据
                     self._sock.settimeout(0.3)
                     try:
@@ -347,7 +344,7 @@ class HuaweiConsole:
                     break
             except socket.timeout:
                 # 超时但还没到 deadline，继续等
-                if _PROMPT_RE.search(buf):
+                if _VRP_PROMPT_RE.search(buf):
                     break
                 continue
             except OSError:

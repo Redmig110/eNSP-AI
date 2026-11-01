@@ -90,10 +90,11 @@ try:
     check("ENSP_EXE 指向不存在的文件 -> 不该返回它",
           A.find_ensp_exe() != os.path.join(TMP_DIR, "不存在.exe"))
 
-    # 注册表解析出来的路径若不存在，也不该被采用
-    eq("注册表路径不存在 -> 解析结果被判无效",
-       A._exe_from_registry() if not os.path.isfile(A._exe_from_registry()) else "",
-       "")
+    # 注册表解析出来的路径若不存在，也不该被采用。
+    # 注意别写成 `... if not isfile(...) else ""` —— 两边都是 ""，永远通过。
+    reg_path = A._exe_from_registry()
+    check("注册表返回的路径必须真实存在（否则应为空）",
+          reg_path == "" or os.path.isfile(reg_path), reg_path)
 finally:
     if saved_env is None:
         os.environ.pop("ENSP_EXE", None)
@@ -156,14 +157,44 @@ try:
 
     A._ensp_pids = lambda: [1, 2]
     A._main_window = lambda pid: 0
-    check("全都没有窗口 -> 退回第一个，不返回 0",
-          A._active_ensp_pid() == 1)
+    eq("全都没有窗口 -> 0（残留启动器不算 eNSP 在运行）",
+       A._active_ensp_pid(), 0)
 
     A._ensp_pids = lambda: []
     A._main_window = lambda pid: 0
     eq("eNSP 没在跑 -> 0", A._active_ensp_pid(), 0)
 finally:
     A._ensp_pids, A._main_window = saved_pids, saved_main
+
+
+# ====================================================================
+# 4b. _pid_alive —— 权限不足不能当成已退出
+# ====================================================================
+section("4b. _pid_alive 错误路径")
+
+
+class _FakeKernel32:
+    """只实现 _pid_alive 用到的两个调用；OpenProcess 固定失败。"""
+
+    def __init__(self, last_error):
+        self.last_error = last_error
+
+    def OpenProcess(self, access, inherit, pid):
+        return 0
+
+    def GetLastError(self):
+        return self.last_error
+
+
+saved_k32 = A._k32
+try:
+    A._k32 = _FakeKernel32(A.ERROR_INVALID_PARAMETER)
+    eq("OpenProcess 参数无效（进程不存在）-> 已退出", A._pid_alive(123), False)
+
+    A._k32 = _FakeKernel32(5)  # ERROR_ACCESS_DENIED
+    eq("OpenProcess 拒绝访问 -> 视为仍存活", A._pid_alive(123), True)
+finally:
+    A._k32 = saved_k32
 
 
 # ====================================================================
@@ -238,16 +269,14 @@ section("8. 源码级兜底：不许按顺序取第一个 pid")
 src = open(os.path.join(REPO, "ensp_mcp_server/tools/ensp_app.py"), encoding="utf-8").read()
 # 先剥掉三引号块 —— 文档字符串里正好在讲这条规则本身，不剥会自摆乌龙。
 code = re.sub(r'""".*?"""', "", src, flags=re.S)
-# 允许 _active_ensp_pid 内部的 `return pids[0] if pids else 0` 兜底；
-# 其余任何 pids[0] / _ensp_pids()[0] 都是回归。
+# 任何 pids[0] / _ensp_pids()[0] 都是回归：残留启动器没有主框架窗口，
+# 按顺序取第一个会把“没在运行”误判成“已在运行”。
 offenders = []
 for ln in code.splitlines():
     s = ln.strip()
     if s.startswith("#"):
         continue
-    if re.search(r"_ensp_pids\(\)\s*\[0\]", s):
-        offenders.append(s)
-    elif re.search(r"\bpids\[0\]", s) and "return pids[0] if pids else 0" not in s:
+    if re.search(r"_ensp_pids\(\)\s*\[0\]", s) or re.search(r"\bpids\[0\]", s):
         offenders.append(s)
 check("没有按顺序取第一个 eNSP 进程的用法", not offenders, f"发现: {offenders}")
 

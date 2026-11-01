@@ -93,7 +93,8 @@ TOOLS = [
         description=(
             "向 eNSP 网络设备下发配置。\n"
             "传入的是一个配置命令的列表,例如:['vlan 10', 'interface g0/0/1', 'port link-type access']\n"
-            "会自动进入 system-view 并在执行完后 return 退出。"
+            "会自动进入 system-view；执行完留在系统视图（不 return），"
+            "下一次下发若停在子视图会先 return 再重新进系统视图。"
         ),
         inputSchema={
             "type": "object",
@@ -138,7 +139,7 @@ TOOLS = [
     ),
     Tool(
         name="save_config",
-        description="保存 eNSP 网络设备的当前配置(执行 save,自动处理 [Y/N] 交互确认)。",
+        description="保存 eNSP 网络设备的当前配置(执行 save,自动处理 [Y/N] 与文件名提示)。",
         inputSchema={
             "type": "object",
             "properties": {

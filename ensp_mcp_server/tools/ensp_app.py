@@ -46,6 +46,7 @@ GW_CHILD = 5
 GW_HWNDNEXT = 2
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 STILL_ACTIVE = 259
+ERROR_INVALID_PARAMETER = 87
 DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 
@@ -57,6 +58,39 @@ _CANVAS_CLASS = "AfxFrameOrView80su"
 _LABEL_CLASS = "RichEdit20W"
 
 _ENUM_CB = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+# 声明原型：不写 restype 时 ctypes 默认按 c_int 处理，64 位下会把 HANDLE
+# （OpenProcess 的返回值）截断成 32 位，后续 GetExitCodeProcess / CloseHandle
+# 可能拿到坏句柄。这里把用到的 Win32 函数一次声明清楚。
+_u32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+_u32.GetClassNameW.restype = ctypes.c_int
+_u32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+_u32.GetWindowTextW.restype = ctypes.c_int
+_u32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+_u32.GetWindowThreadProcessId.restype = wintypes.DWORD
+_u32.EnumWindows.argtypes = [_ENUM_CB, wintypes.LPARAM]
+_u32.EnumWindows.restype = wintypes.BOOL
+_u32.EnumChildWindows.argtypes = [wintypes.HWND, _ENUM_CB, wintypes.LPARAM]
+_u32.EnumChildWindows.restype = wintypes.BOOL
+_u32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+_u32.GetWindow.restype = wintypes.HWND
+_u32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+_u32.GetWindowRect.restype = wintypes.BOOL
+_u32.IsWindow.argtypes = [wintypes.HWND]
+_u32.IsWindow.restype = wintypes.BOOL
+_u32.IsWindowVisible.argtypes = [wintypes.HWND]
+_u32.IsWindowVisible.restype = wintypes.BOOL
+_u32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+_u32.PostMessageW.restype = wintypes.BOOL
+
+_k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+_k32.OpenProcess.restype = wintypes.HANDLE
+_k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+_k32.GetExitCodeProcess.restype = wintypes.BOOL
+_k32.CloseHandle.argtypes = [wintypes.HANDLE]
+_k32.CloseHandle.restype = wintypes.BOOL
+_k32.GetLastError.argtypes = []
+_k32.GetLastError.restype = wintypes.DWORD
 
 
 # ==================== Win32 薄封装 ====================
@@ -136,11 +170,17 @@ def _post_close(hwnd: int) -> None:
 def _pid_alive(pid: int) -> bool:
     h = _k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not h:
-        return False
-    code = wintypes.DWORD()
-    ok = _k32.GetExitCodeProcess(h, ctypes.byref(code))
-    _k32.CloseHandle(h)
-    return bool(ok) and code.value == STILL_ACTIVE
+        # 打不开不等于进程不存在：eNSP 以管理员运行、MCP 没提权时，
+        # OpenProcess 会返回 NULL + ERROR_ACCESS_DENIED。只有参数无效
+        # （进程确实不存在）才判定为已退出，避免误报“eNSP 已关闭”。
+        return _k32.GetLastError() != ERROR_INVALID_PARAMETER
+    try:
+        code = wintypes.DWORD()
+        if not _k32.GetExitCodeProcess(h, ctypes.byref(code)):
+            return True  # 查不到退出码时保守认为还活着
+        return code.value == STILL_ACTIVE
+    finally:
+        _k32.CloseHandle(h)
 
 
 # ==================== 进程枚举 ====================
@@ -174,13 +214,14 @@ def _active_ensp_pid() -> int:
 
     必须用这个而不是 `_ensp_pids()[0]`：实测 `open_topology` 失败时会残留一个
     **没有窗口的启动器进程**，此时列表里会同时出现两个 eNSP_Client.exe，
-    按顺序取第一个会挑错人。
+    按顺序取第一个会挑错人。反过来，**没有任何进程拥有主框架窗口时也必须
+    返回 0** —— 否则那个残留启动器会被误判成“eNSP 已在运行”，`open_ensp`
+    就再也不肯启动界面了。
     """
-    pids = _ensp_pids()
-    for p in pids:
+    for p in _ensp_pids():
         if _main_window(p):
             return p
-    return pids[0] if pids else 0
+    return 0
 
 
 def _leftover_device_processes() -> dict[str, int]:
@@ -401,6 +442,14 @@ def close_ensp() -> str:
     """优雅关闭 eNSP：给主框架发 WM_CLOSE，不做 taskkill。"""
     pid = _active_ensp_pid()
     if not pid:
+        pids = _ensp_pids()
+        if pids:
+            return (
+                f"检测到 eNSP 进程（PID {', '.join(map(str, pids))}），"
+                "但没有主框架窗口 —— 可能是上次 open_topology 失败残留的启动器。\n"
+                "本工具不 taskkill，请在任务管理器里手动结束它，或等它自行退出。"
+                f"{_leftover_note()}"
+            )
         note = _leftover_note()
         return f"eNSP 未在运行。{note}" if note else "eNSP 未在运行。"
 
@@ -472,14 +521,18 @@ def open_topology(file_path: str) -> str:
     after = None
     while time.time() < deadline:
         time.sleep(0.5)
-        active = _active_ensp_pid()
-        if not active:
-            continue
-        after = _board_state(active)
+        # 缓存 PID：只有主窗口消失（或本来就没有）时才重新 tasklist + 枚举，
+        # 否则每 500ms 起一个 tasklist 子进程，40 秒就是 80 次，纯浪费。
+        after = _board_state(active) if active else None
+        if after is None:
+            active = _active_ensp_pid()
+            if not active:
+                continue
+            after = _board_state(active)
         if _handoff_happened(before, after):
             break
     else:
-        if not _active_ensp_pid():
+        if not active:
             return f"已调用 eNSP 打开 {path}，但没检测到 eNSP 进程，请到桌面确认。"
         return _open_topo_failed(path, was_running, before, after)
 
@@ -526,6 +579,11 @@ def close_topology() -> str:
     """
     pid = _active_ensp_pid()
     if not pid:
+        if _ensp_pids():
+            return (
+                "检测到 eNSP 进程，但没有主框架窗口（可能是残留启动器），"
+                "没有可关闭的拓扑。请在任务管理器里确认。"
+            )
         return "eNSP 未在运行，没有可关闭的拓扑。"
 
     main = _main_window(pid)
