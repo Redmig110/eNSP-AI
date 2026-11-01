@@ -47,11 +47,11 @@ _REGISTRY_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "devic
 #   简单: { "R1": 2000 }
 #   详细: { "R1": { "port": 2000, "username": "admin", "password": "xxx" } }
 #
-# ⚠ 只能**原地修改**这个 dict，绝不能重新绑定（`_device_registry = ...`）：
-#   cli.py / inspection.py 用的是 `from ..config import _device_registry`，
+# 注意：只能**原地修改**这个 dict，绝不能重新绑定（`_device_registry = ...`）：
+#   cli.py 等模块用的是 `from ..config import _device_registry`，
 #   导入时就把名字绑死在这个对象上。一旦重新绑定，它们手里还是旧字典 ——
-#   表现是 auto_discover 之后 inspect_topology / multi_health_check 仍在巡检
-#   discover 之前那批设备，_looks_registered 也会把刚发现的设备误报成未注册。
+#   表现是 auto_discover 之后 multi_health_check 仍在巡检 discover 之前那批设备，
+#   按名字查注册表的逻辑也会把刚发现的设备误报成未注册。
 _device_registry: dict[str, int | dict] = {}
 
 
