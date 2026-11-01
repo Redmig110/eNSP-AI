@@ -109,10 +109,10 @@ r = I.evaluate_check(
 eq("多个问题会一起报", len(r["problems"]), 3)
 eq("同时有问题时状态是 FAIL", r["status"], I.FAIL)
 
-# CLAUDE.md 里点名的词边界陷阱
+# 词边界陷阱
 check("\\b120\\b 不会命中 1200（这是正确用法）",
       I.evaluate_check({"expect_match": r"\b120\b"}, "priority 1200")["status"] == I.FAIL)
-check("裸 120 会静默命中 1200（CLAUDE.md 记的坑，工具行为符合记载）",
+check("裸 120 会静默命中 1200（工具行为符合记载）",
       I.evaluate_check({"expect_match": "120"}, "priority 1200")["status"] == I.PASS)
 check("contains 是子串匹配、不区分词边界",
       I.evaluate_check({"expect_contains": ["120"]}, "priority 1200")["status"] == I.PASS)
