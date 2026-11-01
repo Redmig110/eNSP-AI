@@ -1,3 +1,4 @@
 # eNSP MCP Server Dependencies
-mcp>=1.0.0
+# 必须 <2：server.py 使用 v1 低层 API（@server.list_tools()），2.x 已移除
+mcp>=1.0.0,<2
 pydantic>=2.0.0

@@ -46,19 +46,31 @@ _REGISTRY_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "devic
 # 支持两种格式:
 #   简单: { "R1": 2000 }
 #   详细: { "R1": { "port": 2000, "username": "admin", "password": "xxx" } }
+#
+# 注意：只能**原地修改**这个 dict，绝不能重新绑定（`_device_registry = ...`）：
+#   cli.py 等模块用的是 `from ..config import _device_registry`，
+#   导入时就把名字绑死在这个对象上。一旦重新绑定，它们手里还是旧字典 ——
+#   表现是 auto_discover 之后 multi_health_check 仍在巡检 discover 之前那批设备，
+#   按名字查注册表的逻辑也会把刚发现的设备误报成未注册。
 _device_registry: dict[str, int | dict] = {}
 
 
+def _replace_registry(data: dict):
+    """原地替换注册表内容 —— 保持对象身份不变，见上面的注释。"""
+    _device_registry.clear()
+    _device_registry.update(data)
+
+
 def _load_registry():
-    global _device_registry
     if os.path.exists(_REGISTRY_FILE):
         try:
             with open(_REGISTRY_FILE, "r", encoding="utf-8") as f:
-                _device_registry = json.load(f)
+                data = json.load(f)
+            _replace_registry(data)
             logger.info("设备注册表已加载: %d 台设备", len(_device_registry))
         except Exception as e:
             logger.error("加载注册表失败: %s", e)
-            _device_registry = {}
+            _replace_registry({})
 
 
 def _save_registry():
@@ -70,6 +82,13 @@ def _get_device_port(entry: int | dict) -> int:
     if isinstance(entry, dict):
         return entry.get("port", 23)
     return entry
+
+
+def _get_device_credentials(entry: int | dict) -> tuple[str, str]:
+    """取设备用户名/密码。交换机免登录，返回空串即可；USG6000V 必须给。"""
+    if isinstance(entry, dict):
+        return entry.get("username", ""), entry.get("password", "")
+    return "", ""
 
 
 def register_device(name: str, port: int, username: str = "", password: str = "") -> str:
@@ -181,36 +200,67 @@ def auto_discover_devices() -> str:
 
     ports.sort()
 
+    # 现有条目按端口 / 名字建索引，用来保留手动注册的凭据和名字。
+    # 关键：USG6000V 这类设备读不到 sysname（控制台先要登录），必须靠端口
+    # 认回来；否则它会被重命名成 DeviceN，并且被裸端口覆盖掉 username/password。
+    existing_by_port = {}
+    existing_by_name = {}
+    for name, entry in _device_registry.items():
+        existing_by_port.setdefault(_get_device_port(entry), (name, entry))
+        existing_by_name[name] = entry
+
     # 3. 连接获取 sysname
     discovered = {}
     default_count = 0
     for port in ports:
         sysname = _get_sysname_from_port(port)
+        existing = existing_by_port.get(port)
+
         if sysname and sysname != "Huawei":
-            discovered[sysname] = port
+            name = sysname
+            # 端口对得上优先用端口的旧条目；其次按 sysname 找同名旧条目。
+            old = existing[1] if existing else existing_by_name.get(name)
+        elif existing:
+            # 读不到 sysname（需要登录的设备）：保留原名字和凭据。
+            name = existing[0]
+            old = existing[1]
         else:
             default_count += 1
-            discovered[f"Device{default_count}"] = port
+            name = f"Device{default_count}"
+            old = None
 
-    # 4. 合并注册表（保留手动注册的设备）
-    global _device_registry
-    discovered_ports = set(discovered.values())
+        # 两台设备同名时加后缀，避免后发现的覆盖先前发现的。
+        unique = name
+        seq = 2
+        while unique in discovered:
+            unique = f"{name}-{seq}"
+            seq += 1
+
+        if isinstance(old, dict):
+            entry = dict(old)
+            entry["port"] = port
+            discovered[unique] = entry
+        else:
+            discovered[unique] = port
+
+    # 4. 合并注册表（保留没被本次发现覆盖的手动注册设备）
+    discovered_ports = {_get_device_port(e) for e in discovered.values()}
     merged = {}
     for name, entry in _device_registry.items():
         if _get_device_port(entry) not in discovered_ports:
             merged[name] = entry
-    for name, port in discovered.items():
-        merged[name] = port
+    merged.update(discovered)
 
-    _device_registry = merged
+    # 原地更新，不重新绑定 —— 见 _device_registry 定义处的注释
+    _replace_registry(merged)
     _save_registry()
 
     # 生成报告
     lines = [f"自动发现完成！共找到 {len(discovered)} 台设备:"]
     lines.append(f"{'设备名':<12} {'端口':<8}")
     lines.append("-" * 20)
-    for name, port in discovered.items():
-        lines.append(f"{name:<12} {port:<8}")
+    for name, entry in discovered.items():
+        lines.append(f"{name:<12} {_get_device_port(entry):<8}")
 
     manual_kept = {k: v for k, v in merged.items() if k not in discovered}
     if manual_kept:

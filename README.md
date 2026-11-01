@@ -106,7 +106,8 @@ python topo-server.py
 
 ### 功能
 
-- 解析 eNSP `.topo` XML，渲染设备节点 + 连线 + 接口名 + IP 标注
+- 解析 eNSP `.topo` XML，渲染设备节点 + 连线 + 接口名
+- 渲染 eNSP 里的文本标注（`txttip`，通常写作网段、VLAN、机房名等说明）
 - 设备图标区分：路由器 / 交换机 / 防火墙 / PC / Cloud
 - 接口索引自动还原为接口名（交换机 1-based，路由器 0-based）
 - 粘贴截图 (Ctrl+V) 或拖入图片作为参考底图，支持透明度调节
@@ -124,6 +125,18 @@ python topo-server.py
 ```
 
 > 也可双击 `topo-viewer.html` 独立使用（不启动服务器时可视化仍可用，仅同步功能不生效）。
+> 注意此时仍需要联网加载 CDN 上的 vis-network，否则图画不出来。
+
+### .topo 文件的两个坑
+
+写别的解析器时要注意（`topo-viewer.html` 和 MCP 的 `discover_topology` 都已处理）：
+
+1. **编码**：文件头声明 `encoding="UNICODE"`，但实际写的是 **GBK**。
+   Python 的 `ET.parse()` 会直接抛 `LookupError: unknown encoding: UNICODE`；
+   浏览器不处理的话中文设备名/标注会变成 ``。
+2. **标签名**：真实结构是 `devices/dev`、`lines/line/interfacePair`、`txttips/txttip`，
+   不是 `<device>` / `<node>`。另外**一条 `<line>` 可以挂多个 `<interfacePair>`**（多段链路），
+   只取第一个会漏链路。
 
 ## MCP 工具列表
 
