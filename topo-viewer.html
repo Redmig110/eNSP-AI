@@ -226,29 +226,35 @@ function classifyModel(model){
 }
 
 /* ===== Interface Name Resolution ===== */
+/* srcIndex 是设备端口列表上的全局下标，序号按类型分别累计、跨块连续。
+   每块从 base 重新数的话，AR2220（GE×1 + GE×2）会得到
+   GE0/0/0, GE0/0/0, GE0/0/1 —— 重复且丢端口；正确是 GE0/0/0,1,2。 */
+function ifaceAbb(iface){return iface.name==='Ethernet'?'Eth':iface.name}
 function resolveIf(dev,globalIdx){
-  var cum=0;
+  var base=classifyModel(dev.model)==='switch'?1:0;
+  var counters={},seen=0;
   for(var i=0;i<dev.interfaces.length;i++){
-    var iface=dev.interfaces[i];
-    if(globalIdx<cum+iface.count){
-      var local=globalIdx-cum;
-      var base=classifyModel(dev.model)==='switch'?1:0;
-      var abbr=iface.name==='Ethernet'?'Eth':iface.name;
-      return abbr+'0/0/'+(local+base);
+    var abbr=ifaceAbb(dev.interfaces[i]);
+    for(var j=0;j<dev.interfaces[i].count;j++){
+      var n=counters[abbr]===undefined?base:counters[abbr];
+      counters[abbr]=n+1;
+      if(seen===globalIdx)return abbr+'0/0/'+n;
+      seen++;
     }
-    cum+=iface.count;
   }
   return 'if'+globalIdx;
 }
 
 function listIfaces(dev){
-  var result=[],idx=0;
+  var result=[];
   var base=classifyModel(dev.model)==='switch'?1:0;
+  var counters={};
   for(var i=0;i<dev.interfaces.length;i++){
-    var iface=dev.interfaces[i];
-    var abbr=iface.name==='Ethernet'?'Eth':iface.name;
-    for(var j=0;j<iface.count;j++){
-      result.push({name:abbr+'0/0/'+(j+base),idx:idx++});
+    var abbr=ifaceAbb(dev.interfaces[i]);
+    for(var j=0;j<dev.interfaces[i].count;j++){
+      var n=counters[abbr]===undefined?base:counters[abbr];
+      counters[abbr]=n+1;
+      result.push({name:abbr+'0/0/'+n,idx:result.length});
     }
   }
   return result;
@@ -287,17 +293,19 @@ function parseTopo(xmlText){
   doc.querySelectorAll('lines > line').forEach(function(el){
     var sId=el.getAttribute('srcDeviceID');
     var dId=el.getAttribute('destDeviceID');
-    var pair=el.querySelector('interfacePair');
-    if(!pair)return;
     var sD=devById[sId],dD=devById[dId];
-    var sIdx=parseInt(pair.getAttribute('srcIndex'),10)||0;
-    var dIdx=parseInt(pair.getAttribute('tarIndex'),10)||0;
-    links.push({
-      srcId:sId,dstId:dId,
-      srcName:sD?sD.name:sId,dstName:dD?dD.name:dId,
-      srcIf:sD?resolveIf(sD,sIdx):'if'+sIdx,
-      dstIf:dD?resolveIf(dD,dIdx):'if'+dIdx,
-      type:pair.getAttribute('lineName')||'Copper'
+    // 一条 <line> 可以挂多个 <interfacePair>（多段链路）。只取第一个的话，
+    // 后面的链路在图上就没有接口名了。
+    el.querySelectorAll('interfacePair').forEach(function(pair){
+      var sIdx=parseInt(pair.getAttribute('srcIndex'),10)||0;
+      var dIdx=parseInt(pair.getAttribute('tarIndex'),10)||0;
+      links.push({
+        srcId:sId,dstId:dId,
+        srcName:sD?sD.name:sId,dstName:dD?dD.name:dId,
+        srcIf:sD?resolveIf(sD,sIdx):'if'+sIdx,
+        dstIf:dD?resolveIf(dD,dIdx):'if'+dIdx,
+        type:pair.getAttribute('lineName')||'Copper'
+      });
     });
   });
 
@@ -459,15 +467,23 @@ function handleFile(file){
   }
 }
 
+/* eNSP 的 .topo 声明写着 encoding="UNICODE"，但实际写的是 GBK(ANSI)，
+   中文设备名和中文标注都在里面。所以不能无脑当 UTF-8 解 —— 那样中文会全变成 。
+   判定顺序：BOM -> UTF-16；否则先严格试 UTF-8，失败再退 GBK。
+   反过来的话，纯 ASCII 的文件也会被当成 GBK。 */
+function decodeTopo(buf){
+  if(buf.length>=2&&buf[0]===0xFF&&buf[1]===0xFE) return new TextDecoder('utf-16le').decode(buf.subarray(2));
+  if(buf.length>=2&&buf[0]===0xFE&&buf[1]===0xFF) return new TextDecoder('utf-16be').decode(buf.subarray(2));
+  if(buf.length>=3&&buf[0]===0xEF&&buf[1]===0xBB&&buf[2]===0xBF) return new TextDecoder('utf-8').decode(buf.subarray(3));
+  if(buf.length>=4&&buf[1]===0&&buf[3]===0) return new TextDecoder('utf-16le').decode(buf);
+  try{ return new TextDecoder('utf-8',{fatal:true}).decode(buf); }
+  catch(e){ return new TextDecoder('gbk').decode(buf); }
+}
 function readAsText(file){
   return new Promise(function(resolve,reject){
     var reader=new FileReader();
     reader.onload=function(e){
-      var buf=new Uint8Array(e.target.result),text;
-      if(buf.length>=2&&buf[0]===0xFF&&buf[1]===0xFE) text=new TextDecoder('utf-16le').decode(buf);
-      else if(buf.length>=2&&buf[0]===0xFE&&buf[1]===0xFF) text=new TextDecoder('utf-16be').decode(buf);
-      else if(buf.length>=4&&buf[1]===0&&buf[3]===0) text=new TextDecoder('utf-16le').decode(buf);
-      else text=new TextDecoder('utf-8').decode(buf);
+      var text=decodeTopo(new Uint8Array(e.target.result));
       if(text.charCodeAt(0)===0xFEFF) text=text.substring(1);
       resolve(text);
     };
